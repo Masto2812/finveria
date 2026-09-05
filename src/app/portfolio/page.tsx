@@ -1,40 +1,25 @@
 'use client'
 
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import Link from 'next/link'
 
-// Inflation suisse annuelle (IPC) — source: OFS
+// ─── Swiss CPI (OFS, annual average, 2015=base) ───────────────────────────────
 const INFLATION_CH: Record<number, number> = {
   2015: -0.011, 2016: -0.004, 2017: 0.005, 2018: 0.009, 2019: 0.004,
   2020: -0.007, 2021: 0.006, 2022: 0.028, 2023: 0.021, 2024: 0.013, 2025: 0.010,
 }
 
 function inflationCumulee(dateAchat: string): number {
-  if (!dateAchat) return 0
-  const debut = new Date(dateAchat)
-  const maintenant = new Date()
-  let cumul = 1
-  const anneeDebut = debut.getFullYear()
-  const anneeFin = maintenant.getFullYear()
-  for (let y = anneeDebut; y <= anneeFin; y++) {
-    const taux = INFLATION_CH[y] ?? 0.01
-    if (y === anneeDebut && y === anneeFin) {
-      const jours = (maintenant.getTime() - debut.getTime()) / (365.25 * 24 * 3600 * 1000)
-      cumul *= Math.pow(1 + taux, jours)
-    } else if (y === anneeDebut) {
-      const resteAnnee = (new Date(y + 1, 0, 1).getTime() - debut.getTime()) / (365.25 * 24 * 3600 * 1000)
-      cumul *= Math.pow(1 + taux, resteAnnee)
-    } else if (y === anneeFin) {
-      const debutAnnee = new Date(y, 0, 1)
-      const jours = (maintenant.getTime() - debutAnnee.getTime()) / (365.25 * 24 * 3600 * 1000)
-      cumul *= Math.pow(1 + taux, jours)
-    } else {
-      cumul *= (1 + taux)
-    }
+  const anneeAchat = new Date(dateAchat).getFullYear()
+  const anneeActuelle = new Date().getFullYear()
+  let cumul = 0
+  for (let y = anneeAchat; y < anneeActuelle; y++) {
+    cumul += INFLATION_CH[y] ?? 0.015
   }
-  return cumul - 1
+  return cumul
 }
 
+// ─── Types ────────────────────────────────────────────────────────────────────
 interface Position {
   id: string
   nom: string
@@ -49,159 +34,207 @@ interface Position {
   tauxActuelCHF: number
 }
 
-const CATEGORIES = ['Actions', 'ETF', 'Obligations', 'Matières premières', 'Crypto', 'Autre']
+interface PositionCalc extends Position {
+  coutCHF: number
+  valeurCHF: number
+  gainCHF: number
+  gainPctCHF: number
+  gainDevise: number
+  gainPctDevise: number
+  impactFX: number
+  gainReel: number
+  gainPctReel: number
+}
+
 const DEVISES = ['CHF', 'USD', 'EUR', 'GBP', 'JPY', 'SEK', 'NOK', 'DKK']
+const CATEGORIES = ['Actions', 'ETF', 'Obligations', 'Matières premières', 'Crypto', 'Autre']
 
-const CAT_COLORS: Record<string, string> = {
-  'Actions': 'bg-blue-100 text-blue-700',
-  'ETF': 'bg-teal-100 text-teal-700',
-  'Obligations': 'bg-slate-100 text-slate-600',
-  'Matières premières': 'bg-amber-100 text-amber-700',
-  'Crypto': 'bg-purple-100 text-purple-700',
-  'Autre': 'bg-gray-100 text-gray-600',
-}
-
-function fmt(n: number, dec = 0): string {
-  return n.toLocaleString('fr-CH', { minimumFractionDigits: dec, maximumFractionDigits: dec })
-}
-
-function pct(n: number): string {
-  return (n >= 0 ? '+' : '') + fmt(n, 2) + '%'
-}
-
-function gainColor(n: number): string {
-  if (n > 0) return 'text-emerald-600'
-  if (n < 0) return 'text-red-500'
-  return 'text-gray-500'
+const CAT_COLOR: Record<string, string> = {
+  'Actions': '#2B6B5A',
+  'ETF': '#1B3050',
+  'Obligations': '#B5820F',
+  'Matières premières': '#7C4F2A',
+  'Crypto': '#5C3080',
+  'Autre': '#5C6880',
 }
 
 const EMPTY_FORM: Omit<Position, 'id'> = {
   nom: '', ticker: '', categorie: 'Actions', devise: 'USD',
   quantite: 0, prixAchat: 0, tauxAchatCHF: 1,
-  dateAchat: new Date().toISOString().split('T')[0],
+  dateAchat: new Date().toISOString().slice(0, 10),
   prixActuel: 0, tauxActuelCHF: 1,
 }
-// ─── Graphique évolution ───────────────────────────────────────────────────
-function EvolChart({ data }: { data: ReturnType<typeof useMemo<typeof positionsCalc>> }) {
-  if (!data || data.length === 0) return null
-  const sorted = [...data].sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
-  const now = new Date()
-  const tMin = new Date(sorted[0].dateAchat).getTime()
-  const tMax = now.getTime()
 
-  // Construire les points : cumul investi (step) + valeur actuelle (interpolée)
-  type Pt = { t: number; cout: number; valeur: number }
-  const pts: Pt[] = []
-  let cumCout = 0
-  for (const p of sorted) {
-    const t = new Date(p.dateAchat).getTime()
-    if (pts.length > 0) pts.push({ t, cout: cumCout, valeur: cumCout })
-    cumCout += p.coutCHF
-    pts.push({ t, cout: cumCout, valeur: cumCout })
+// ─── Chart: Evolution du portefeuille ────────────────────────────────────────
+function EvolChart({ data }: { data: PositionCalc[] }) {
+  const W = 600, H = 220, PAD = { t: 16, r: 16, b: 36, l: 64 }
+  const iW = W - PAD.l - PAD.r
+  const iH = H - PAD.t - PAD.b
+
+  const points = useMemo(() => {
+    if (data.length === 0) return []
+    const sorted = [...data].sort(
+      (a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime()
+    )
+    const today = new Date()
+    const firstDate = new Date(sorted[0].dateAchat)
+    const totalMs = today.getTime() - firstDate.getTime()
+
+    // Build cumulative cost timeline
+    let cumCost = 0
+    const pts: { x: number; cost: number; value: number; label: string }[] = []
+
+    for (const p of sorted) {
+      const t = (new Date(p.dateAchat).getTime() - firstDate.getTime()) / totalMs
+      cumCost += p.coutCHF
+      pts.push({ x: t, cost: cumCost, value: cumCost, label: p.dateAchat.slice(0, 7) })
+    }
+    // Today: value = total portfolio value
+    const totalValue = data.reduce((s, p) => s + p.valeurCHF, 0)
+    pts.push({ x: 1, cost: cumCost, value: totalValue, label: "Auj." })
+
+    return pts
+  }, [data])
+
+  if (points.length < 2) {
+    return (
+      <div className="flex items-center justify-center h-36 text-sm text-[#9E9A93]">
+        Ajoutez au moins 2 positions pour voir le graphique
+      </div>
+    )
   }
-  const totalValeur = data.reduce((s, p) => s + p.valeurCHF, 0)
-  pts.push({ t: tMax, cout: cumCout, valeur: totalValeur })
 
-  const W = 560; const H = 160
-  const PL = 64; const PR = 16; const PT = 16; const PB = 28
-  const cW = W - PL - PR; const cH = H - PT - PB
-  const yMax = Math.max(cumCout, totalValeur) * 1.12 || 1
+  const allValues = points.flatMap(p => [p.cost, p.value])
+  const maxV = Math.max(...allValues) * 1.08
+  const minV = Math.min(0, ...allValues)
+  const span = maxV - minV || 1
 
-  function xp(t: number) { return PL + ((t - tMin) / (tMax - tMin || 1)) * cW }
-  function yp(v: number) { return PT + cH - (v / yMax) * cH }
+  const px = (t: number) => PAD.l + t * iW
+  const py = (v: number) => PAD.t + iH - ((v - minV) / span) * iH
 
-  const coutD = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xp(p.t)} ${yp(p.cout)}`).join(' ')
-  const valD  = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xp(p.t)} ${yp(p.valeur)}`).join(' ')
-  const coutFill = `${coutD} L ${xp(tMax)} ${yp(0)} L ${PL} ${yp(0)} Z`
-  const isGain = totalValeur >= cumCout
+  // Cost path (step function)
+  const costPath = points.map((p, i) => {
+    if (i === 0) return `M ${px(p.x)} ${py(p.cost)}`
+    const prev = points[i - 1]
+    return `L ${px(p.x)} ${py(prev.cost)} L ${px(p.x)} ${py(p.cost)}`
+  }).join(' ')
 
-  const yTicks = [0.25, 0.5, 0.75, 1].map(f => ({ v: yMax * f, y: yp(yMax * f) }))
+  // Value line (straight to today)
+  const valuePath = `M ${px(points[0].x)} ${py(points[0].cost)} L ${px(1)} ${py(points[points.length - 1].value)}`
+
+  const lastValue = points[points.length - 1].value
+  const lastCost = points[points.length - 1].cost
+  const gain = lastValue - lastCost
+  const lineColor = gain >= 0 ? '#2B6B5A' : '#DC2626'
+
+  // Y ticks
+  const yTicks = 4
+  const tickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
+    minV + (span * i) / yTicks
+  )
+
+  // Date labels: first + last
+  const labels = [
+    { x: px(points[0].x), label: points[0].label },
+    { x: px(1), label: 'Auj.' },
+  ]
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: '160px' }}>
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }}>
       <defs>
-        <linearGradient id="gcout" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#DDD9D1" stopOpacity="0.7" />
-          <stop offset="100%" stopColor="#DDD9D1" stopOpacity="0.1" />
+        <linearGradient id="gradValue" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={lineColor} stopOpacity="0.18" />
+          <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
         </linearGradient>
-        <linearGradient id="gval" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={isGain ? '#2B6B5A' : '#C0392B'} stopOpacity="0.15" />
-          <stop offset="100%" stopColor={isGain ? '#2B6B5A' : '#C0392B'} stopOpacity="0" />
+        <linearGradient id="gradCost" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#5C6880" stopOpacity="0.08" />
+          <stop offset="100%" stopColor="#5C6880" stopOpacity="0" />
         </linearGradient>
       </defs>
 
-      {/* Grille */}
-      {yTicks.map(tk => (
-        <g key={tk.v}>
-          <line x1={PL} x2={W - PR} y1={tk.y} y2={tk.y} stroke="currentColor" strokeOpacity="0.07" strokeWidth="1" />
-          <text x={PL - 6} y={tk.y + 4} textAnchor="end" fontSize="9" fill="currentColor" opacity="0.4">
-            {(tk.v / 1000).toFixed(0)}k
+      {/* Grid */}
+      {tickVals.map((v, i) => (
+        <g key={i}>
+          <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)}
+            stroke="#DDD9D1" strokeWidth="0.5" strokeDasharray="3 3" />
+          <text x={PAD.l - 6} y={py(v) + 4} textAnchor="end"
+            fontSize="10" fill="#9E9A93">
+            {v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toFixed(0)}
           </text>
         </g>
       ))}
 
-      {/* Zone investi */}
-      <path d={coutFill} fill="url(#gcout)" />
-      <path d={coutD} fill="none" stroke="#9E9A93" strokeWidth="1.5" strokeDasharray="4 3" />
+      {/* Cost area fill */}
+      <path
+        d={`${costPath} L ${px(1)} ${py(minV)} L ${px(points[0].x)} ${py(minV)} Z`}
+        fill="url(#gradCost)"
+      />
 
-      {/* Zone valeur actuelle */}
-      <path d={`${valD} L ${xp(tMax)} ${yp(0)} L ${PL} ${yp(0)} Z`} fill="url(#gval)" />
-      <path d={valD} fill="none" stroke={isGain ? '#2B6B5A' : '#C0392B'} strokeWidth="2" strokeLinejoin="round" />
+      {/* Value area fill */}
+      <path
+        d={`${valuePath} L ${px(1)} ${py(minV)} L ${px(points[0].x)} ${py(minV)} Z`}
+        fill="url(#gradValue)"
+      />
 
-      {/* Point final */}
-      <circle cx={xp(tMax)} cy={yp(totalValeur)} r="4"
-        fill={isGain ? '#2B6B5A' : '#C0392B'} stroke="white" strokeWidth="2" />
+      {/* Cost line (dashed) */}
+      <path d={costPath} fill="none" stroke="#9E9A93" strokeWidth="1.5" strokeDasharray="4 3" />
 
-      {/* Étiquette valeur finale */}
-      <text x={xp(tMax) - 6} y={yp(totalValeur) - 10} textAnchor="end" fontSize="10"
-        fill={isGain ? '#2B6B5A' : '#C0392B'} fontWeight="600">
-        {Math.round(totalValeur).toLocaleString('fr-CH')} CHF
-      </text>
+      {/* Value line */}
+      <path d={valuePath} fill="none" stroke={lineColor} strokeWidth="2" />
 
-      {/* Axe dates */}
-      {sorted.slice(0, 4).map(p => (
-        <text key={p.id} x={xp(new Date(p.dateAchat).getTime())} y={H - 4}
-          textAnchor="middle" fontSize="9" fill="currentColor" opacity="0.35">
-          {new Date(p.dateAchat).toLocaleDateString('fr-CH', { month: 'short', year: '2-digit' })}
+      {/* Endpoint dot */}
+      <circle cx={px(1)} cy={py(lastValue)} r="4" fill={lineColor} />
+
+      {/* Date labels */}
+      {labels.map(({ x, label }) => (
+        <text key={label} x={x} y={H - 6} textAnchor="middle"
+          fontSize="10" fill="#9E9A93">
+          {label}
         </text>
       ))}
-      <text x={xp(tMax)} y={H - 4} textAnchor="end" fontSize="9" fill="currentColor" opacity="0.35">
-        Aujourd&apos;hui
-      </text>
 
-      {/* Légende */}
-      <line x1={PL} x2={PL + 18} y1={H - PB + 10} y2={H - PB + 10} stroke="#9E9A93" strokeWidth="1.5" strokeDasharray="4 3" />
-      <text x={PL + 22} y={H - PB + 14} fontSize="9" fill="currentColor" opacity="0.5">Investi</text>
-      <line x1={PL + 65} x2={PL + 83} y1={H - PB + 10} y2={H - PB + 10} stroke={isGain ? '#2B6B5A' : '#C0392B'} strokeWidth="2" />
-      <text x={PL + 87} y={H - PB + 14} fontSize="9" fill="currentColor" opacity="0.5">Valeur actuelle</text>
+      {/* Legend */}
+      <g transform={`translate(${PAD.l + 8}, ${PAD.t + 8})`}>
+        <line x1="0" y1="6" x2="18" y2="6" stroke="#9E9A93" strokeWidth="1.5" strokeDasharray="4 3" />
+        <text x="22" y="10" fontSize="10" fill="#9E9A93">Investi</text>
+        <line x1="60" y1="6" x2="78" y2="6" stroke={lineColor} strokeWidth="2" />
+        <text x="82" y="10" fontSize="10" fill={lineColor}>Valeur actuelle</text>
+      </g>
     </svg>
   )
 }
 
-// ─── Graphique allocation ──────────────────────────────────────────────────
-const CAT_HUE: Record<string, string> = {
-  'Actions': '#2B6B5A', 'ETF': '#1B3050', 'Obligations': '#5C6880',
-  'Matières premières': '#B5820F', 'Crypto': '#7C3AED', 'Autre': '#9E9A93',
-}
+// ─── Chart: Allocation par catégorie ─────────────────────────────────────────
+function AllocChart({ data }: { data: PositionCalc[] }) {
+  if (data.length === 0) return null
 
-function AllocChart({ data }: { data: { categorie: string; valeurCHF: number }[] }) {
-  const bycat: Record<string, number> = {}
-  for (const p of data) bycat[p.categorie] = (bycat[p.categorie] || 0) + p.valeurCHF
-  const total = Object.values(bycat).reduce((s, v) => s + v, 0) || 1
-  const entries = Object.entries(bycat).sort((a, b) => b[1] - a[1])
+  const totalVal = data.reduce((s, p) => s + p.valeurCHF, 0)
+  if (totalVal <= 0) return null
+
+  const byCategory = CATEGORIES.map(cat => ({
+    cat,
+    val: data.filter(p => p.categorie === cat).reduce((s, p) => s + p.valeurCHF, 0),
+    color: CAT_COLOR[cat],
+  })).filter(c => c.val > 0).sort((a, b) => b.val - a.val)
 
   return (
-    <div className="space-y-2">
-      {entries.map(([cat, val]) => {
-        const pct = (val / total) * 100
+    <div className="space-y-2.5">
+      {byCategory.map(({ cat, val, color }) => {
+        const pct = (val / totalVal) * 100
         return (
           <div key={cat}>
             <div className="flex justify-between text-xs mb-1">
-              <span className="text-gray-500">{cat}</span>
-              <span className="font-mono text-gray-600 dark:text-gray-400">{pct.toFixed(1)}%</span>
+              <span className="text-[#5C6880]">{cat}</span>
+              <span className="font-mono text-[#1B3050] dark:text-[#E8E4DC]">
+                {val.toLocaleString('fr-CH', { maximumFractionDigits: 0 })} CHF
+                <span className="text-[#9E9A93] ml-1">({pct.toFixed(0)}%)</span>
+              </span>
             </div>
-            <div className="h-2 rounded-full bg-gray-100 dark:bg-slate-700">
-              <div className="h-2 rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: CAT_HUE[cat] || '#9E9A93' }} />
+            <div className="h-2 rounded-full bg-[#F5F3EF] dark:bg-[#0F1E2C]">
+              <div
+                className="h-2 rounded-full transition-all"
+                style={{ width: `${pct}%`, backgroundColor: color }}
+              />
             </div>
           </div>
         )
@@ -209,313 +242,295 @@ function AllocChart({ data }: { data: { categorie: string; valeurCHF: number }[]
     </div>
   )
 }
+
+// ─── Main component ───────────────────────────────────────────────────────────
 export default function PortfolioPage() {
   const [positions, setPositions] = useState<Position[]>([])
-  const [showForm, setShowForm] = useState(false)
+  const [activeTab, setActiveTab] = useState<'positions' | 'analyse'>('positions')
+  const [showModal, setShowModal] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState<Omit<Position, 'id'>>(EMPTY_FORM)
-  const [activeTab, setActiveTab] = useState<'positions' | 'analyse'>('positions')
 
+  // Load from localStorage
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('finveria_portfolio')
-      if (saved) setPositions(JSON.parse(saved))
+      const raw = localStorage.getItem('finveria_portfolio')
+      if (raw) setPositions(JSON.parse(raw))
     } catch {}
   }, [])
 
-  function save(updated: Position[]) {
-    setPositions(updated)
-    try { localStorage.setItem('finveria_portfolio', JSON.stringify(updated)) } catch {}
-  }
+  // Save to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('finveria_portfolio', JSON.stringify(positions))
+    } catch {}
+  }, [positions])
 
+  // Calculated positions
+  const positionsCalc: PositionCalc[] = useMemo(() =>
+    positions.map(p => {
+      const coutCHF = p.quantite * p.prixAchat * p.tauxAchatCHF
+      const valeurCHF = p.quantite * p.prixActuel * p.tauxActuelCHF
+      const gainCHF = valeurCHF - coutCHF
+      const gainPctCHF = coutCHF > 0 ? (gainCHF / coutCHF) * 100 : 0
+      const gainDevise = p.quantite * (p.prixActuel - p.prixAchat)
+      const gainPctDevise = p.prixAchat > 0 ? ((p.prixActuel - p.prixAchat) / p.prixAchat) * 100 : 0
+      const impactFX = p.devise === 'CHF' ? 0 :
+        p.quantite * p.prixActuel * (p.tauxActuelCHF - p.tauxAchatCHF)
+      const inflation = inflationCumulee(p.dateAchat)
+      const coutInflate = coutCHF * (1 + inflation)
+      const gainReel = valeurCHF - coutInflate
+      const gainPctReel = coutCHF > 0 ? (gainReel / coutCHF) * 100 : 0
+      return {
+        ...p, coutCHF, valeurCHF, gainCHF, gainPctCHF,
+        gainDevise, gainPctDevise, impactFX, gainReel, gainPctReel,
+      }
+    }),
+  [positions])
+
+  // Totals
+  const totals = useMemo(() => {
+    const coutTotal = positionsCalc.reduce((s, p) => s + p.coutCHF, 0)
+    const valeurTotal = positionsCalc.reduce((s, p) => s + p.valeurCHF, 0)
+    const gainTotal = valeurTotal - coutTotal
+    const gainPct = coutTotal > 0 ? (gainTotal / coutTotal) * 100 : 0
+    const fxTotal = positionsCalc.reduce((s, p) => s + p.impactFX, 0)
+    const gainReelTotal = positionsCalc.reduce((s, p) => s + p.gainReel, 0)
+    const gainReelPct = coutTotal > 0 ? (gainReelTotal / coutTotal) * 100 : 0
+    return { coutTotal, valeurTotal, gainTotal, gainPct, fxTotal, gainReelTotal, gainReelPct }
+  }, [positionsCalc])
+
+  // Modal handlers
   function openAdd() {
-    setForm(EMPTY_FORM)
     setEditId(null)
-    setShowForm(true)
+    setForm(EMPTY_FORM)
+    setShowModal(true)
   }
 
   function openEdit(p: Position) {
-    const { id, ...rest } = p
-    setForm(rest)
-    setEditId(id)
-    setShowForm(true)
+    setEditId(p.id)
+    setForm({ ...p })
+    setShowModal(true)
   }
 
-  function submitForm() {
-    if (!form.nom || form.quantite <= 0 || form.prixAchat <= 0) return
+  function saveForm() {
+    if (!form.nom) return
     if (editId) {
-      save(positions.map(p => p.id === editId ? { ...form, id: editId } : p))
+      setPositions(ps => ps.map(p => p.id === editId ? { ...form, id: editId } : p))
     } else {
-      save([...positions, { ...form, id: crypto.randomUUID() }])
+      setPositions(ps => [...ps, { ...form, id: crypto.randomUUID() }])
     }
-    setShowForm(false)
+    setShowModal(false)
   }
 
-  function deletePos(id: string) {
-    save(positions.filter(p => p.id !== id))
+  function deletePosition(id: string) {
+    setPositions(ps => ps.filter(p => p.id !== id))
   }
 
-  function setF(field: keyof typeof form) {
-    return (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-      const val = ['quantite', 'prixAchat', 'tauxAchatCHF', 'prixActuel', 'tauxActuelCHF'].includes(field)
-        ? parseFloat(e.target.value) || 0
-        : e.target.value
-      setForm(prev => ({ ...prev, [field]: val }))
-    }
+  const fld = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    setForm(f => ({ ...f, [k]: e.target.type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value }))
+
+  function color(pct: number) {
+    return pct >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'
   }
 
-  // Calculs par position
-  const positionsCalc = useMemo(() => positions.map(p => {
-    const coutCHF = p.quantite * p.prixAchat * p.tauxAchatCHF
-    const valeurCHF = p.quantite * p.prixActuel * p.tauxActuelCHF
-    const gainCHF = valeurCHF - coutCHF
-    const gainPctCHF = coutCHF > 0 ? (gainCHF / coutCHF) * 100 : 0
+  function fmtPct(n: number) {
+    return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
+  }
 
-    // Gain nominal en devise d'origine
-    const gainDevise = p.quantite * (p.prixActuel - p.prixAchat)
-    const gainPctDevise = p.prixAchat > 0 ? ((p.prixActuel - p.prixAchat) / p.prixAchat) * 100 : 0
+  function fmtChf(n: number) {
+    return n.toLocaleString('fr-CH', { maximumFractionDigits: 0 }) + ' CHF'
+  }
 
-    // Impact taux de change seul
-    const valeurSansFX = p.quantite * p.prixActuel * p.tauxAchatCHF
-    const impactFX = valeurCHF - valeurSansFX
+  const inputCls = `
+    w-full bg-white dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52]
+    rounded-lg px-3 py-2 text-sm text-[#1B3050] dark:text-[#E8E4DC]
+    focus:outline-none focus:ring-2 focus:ring-[#2B6B5A] focus:border-transparent
+    placeholder-[#9E9A93]
+  `
 
-    // Gain ajusté inflation
-    const inflation = inflationCumulee(p.dateAchat)
-    const coutInflate = coutCHF * (1 + inflation)
-    const gainReel = valeurCHF - coutInflate
-    const gainPctReel = coutCHF > 0 ? (gainReel / coutCHF) * 100 : 0
-
-    return { ...p, coutCHF, valeurCHF, gainCHF, gainPctCHF, gainDevise, gainPctDevise, impactFX, gainReel, gainPctReel, inflation }
-  }), [positions])
-
-  const totaux = useMemo(() => {
-    const totalCout = positionsCalc.reduce((s, p) => s + p.coutCHF, 0)
-    const totalValeur = positionsCalc.reduce((s, p) => s + p.valeurCHF, 0)
-    const totalGain = totalValeur - totalCout
-    const totalGainPct = totalCout > 0 ? (totalGain / totalCout) * 100 : 0
-    const totalReel = positionsCalc.reduce((s, p) => s + p.gainReel, 0)
-    const totalReelPct = totalCout > 0 ? (totalReel / totalCout) * 100 : 0
-    const totalFX = positionsCalc.reduce((s, p) => s + p.impactFX, 0)
-    return { totalCout, totalValeur, totalGain, totalGainPct, totalReel, totalReelPct, totalFX }
-  }, [positionsCalc])
-
-  const inputCls = 'w-full bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600'
+  const isEmpty = positions.length === 0
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100">
-      <nav className="border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-6 py-4 flex items-center justify-between">
-        <Link href="/" className="text-lg font-semibold">fin<span className="text-teal-700">veria</span></Link>
+    <div className="min-h-screen bg-[#F5F3EF] dark:bg-[#0F1E2C] text-[#1B3050] dark:text-[#E8E4DC]">
+
+      {/* Nav */}
+      <nav className="border-b border-[#DDD9D1] dark:border-[#1e3347] bg-white dark:bg-[#162534] px-6 py-4 flex items-center justify-between">
+        <Link href="/" className="text-lg font-semibold tracking-tight text-[#1B3050] dark:text-white">
+          fin<span className="text-[#2B6B5A]">veria</span>
+        </Link>
         <div className="flex gap-4 text-sm">
-          <Link href="/comparateur" className="text-gray-500 hover:text-slate-800">Comparateur</Link>
-          <Link href="/simulateur" className="text-gray-500 hover:text-slate-800">Simulateur</Link>
-          <Link href="/portfolio" className="text-teal-700 font-medium">Portfolio</Link>
+          <Link href="/comparateur" className="text-[#5C6880] hover:text-[#1B3050] dark:hover:text-white transition-colors">Comparateur</Link>
+          <Link href="/simulateur" className="text-[#5C6880] hover:text-[#1B3050] dark:hover:text-white transition-colors">Simulateur</Link>
+          <Link href="/portfolio" className="text-[#2B6B5A] font-medium">Portfolio</Link>
         </div>
       </nav>
 
       <div className="max-w-6xl mx-auto px-4 py-10">
-        <div className="flex items-start justify-between mb-8">
+
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl font-bold mb-1">Mon Portfolio</h1>
-            <p className="text-gray-500 text-sm">Performance réelle en CHF — corrigée du taux de change et de l&apos;inflation suisse.</p>
+            <div className="flex items-center gap-3 mb-1">
+              <h1 className="text-2xl font-bold tracking-tight">Mon portfolio</h1>
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-[#B5820F]/10 text-[#B5820F] border border-[#B5820F]/20">Premium</span>
+            </div>
+            <p className="text-[#5C6880] text-sm">Suivi de vos positions avec performance nominale, ajustée FX et inflation réelle.</p>
           </div>
-          <button onClick={openAdd} className="bg-teal-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-teal-800 transition-colors">
-            + Ajouter une position
+          <button
+            onClick={openAdd}
+            className="bg-[#2B6B5A] hover:bg-[#225549] text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+          >
+            + Ajouter
           </button>
         </div>
 
-        {/* Cartes résumé */}
-        {positions.length > 0 && (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-            {[
-              { label: 'Valeur totale', value: fmt(totaux.totalValeur) + ' CHF', sub: 'investi : ' + fmt(totaux.totalCout) + ' CHF', color: 'text-slate-800 dark:text-white' },
-              { label: 'Gain nominal CHF', value: (totaux.totalGain >= 0 ? '+' : '') + fmt(totaux.totalGain) + ' CHF', sub: pct(totaux.totalGainPct), color: gainColor(totaux.totalGain) },
-              { label: 'Impact change CHF', value: (totaux.totalFX >= 0 ? '+' : '') + fmt(totaux.totalFX) + ' CHF', sub: 'effet devises', color: gainColor(totaux.totalFX) },
-              { label: 'Gain réel (inflation)', value: (totaux.totalReel >= 0 ? '+' : '') + fmt(totaux.totalReel) + ' CHF', sub: pct(totaux.totalReelPct) + ' pouvoir d\'achat', color: gainColor(totaux.totalReel) },
-            ].map(card => (
-              <div key={card.label} className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-4">
-                <p className="text-xs text-gray-500 mb-1">{card.label}</p>
-                <p className={`text-xl font-bold font-mono ${card.color}`}>{card.value}</p>
-                <p className="text-xs text-gray-400 mt-0.5">{card.sub}</p>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Onglets */}
-        <div className="flex gap-1 bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-1 mb-5 w-fit">
-          {[{ key: 'positions', label: 'Positions' }, { key: 'analyse', label: 'Analyse FX & Inflation' }].map(t => (
-            <button key={t.key} onClick={() => setActiveTab(t.key as typeof activeTab)}
-              className={`py-2 px-4 rounded-lg text-sm font-medium transition-colors ${activeTab === t.key ? 'bg-teal-700 text-white' : 'text-gray-500 hover:text-slate-800'}`}>
-              {t.label}
+        {isEmpty ? (
+          <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-16 text-center">
+            <div className="text-5xl mb-4">📈</div>
+            <h2 className="text-lg font-semibold mb-2">Commencez à suivre votre portefeuille</h2>
+            <p className="text-[#5C6880] text-sm mb-6 max-w-sm mx-auto">
+              Ajoutez vos positions pour voir votre performance réelle en CHF, ajustée pour le taux de change et l'inflation suisse.
+            </p>
+            <button
+              onClick={openAdd}
+              className="bg-[#2B6B5A] hover:bg-[#225549] text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+            >
+              + Ajouter ma première position
             </button>
-          ))}
-        </div>
+          </div>
+        ) : (
+          <>
+            {/* Summary row + charts */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
 
-        {/* Tab Positions */}
-        {activeTab === 'positions' && (
-          positions.length === 0 ? (
-            <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-16 text-center">
-              <div className="text-5xl mb-4">📊</div>
-              <p className="text-lg font-medium mb-2">Aucune position</p>
-              <p className="text-gray-400 text-sm mb-6">Ajoutez vos investissements pour suivre leur performance réelle en CHF.</p>
-              <button onClick={openAdd} className="bg-teal-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-teal-800 transition-colors">
-                + Ajouter ma première position
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {positionsCalc.map(p => (
-                <div key={p.id} className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-5">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-semibold">{p.nom}</p>
-                          {p.ticker && <span className="text-xs text-gray-400 font-mono">{p.ticker}</span>}
-                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${CAT_COLORS[p.categorie] || 'bg-gray-100 text-gray-600'}`}>{p.categorie}</span>
-                        </div>
-                        <p className="text-xs text-gray-400 mt-0.5">
-                          {fmt(p.quantite, 4)} × {fmt(p.prixAchat, 2)} {p.devise} — acheté le {new Date(p.dateAchat).toLocaleDateString('fr-CH')}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => openEdit(p)} className="text-xs text-gray-400 hover:text-teal-700 px-2 py-1 rounded border border-gray-200 hover:border-teal-300 transition-colors">Modifier</button>
-                      <button onClick={() => deletePos(p.id)} className="text-xs text-gray-400 hover:text-red-500 px-2 py-1 rounded border border-gray-200 hover:border-red-200 transition-colors">Supprimer</button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-4">
-                    {/* Gain nominal devise */}
-                    <div className="bg-gray-50 dark:bg-slate-700/50 rounded-lg p-3">
-                      <p className="text-xs text-gray-400 mb-1">Gain nominal ({p.devise})</p>
-                      <p className={`text-base font-bold font-mono ${gainColor(p.gainDevise)}`}>
-                        {p.gainDevise >= 0 ? '+' : ''}{fmt(p.gainDevise, 2)} {p.devise}
-                      </p>
-                      <p className={`text-xs font-medium ${gainColor(p.gainPctDevise)}`}>{pct(p.gainPctDevise)}</p>
-                    </div>
-
-                    {/* Gain réel CHF */}
-                    <div className="bg-gray-50 dark:bg-slate-700/50 rounded-lg p-3">
-                      <p className="text-xs text-gray-400 mb-1">Gain réel en CHF</p>
-                      <p className={`text-base font-bold font-mono ${gainColor(p.gainCHF)}`}>
-                        {p.gainCHF >= 0 ? '+' : ''}{fmt(p.gainCHF, 0)} CHF
-                      </p>
-                      <p className={`text-xs font-medium ${gainColor(p.gainPctCHF)}`}>{pct(p.gainPctCHF)}</p>
-                      {p.devise !== 'CHF' && (
-                        <p className="text-xs text-gray-400 mt-1">
-                          FX: {p.impactFX >= 0 ? '+' : ''}{fmt(p.impactFX, 0)} CHF
-                        </p>
-                      )}
-                    </div>
-
-                    {/* Gain pouvoir d'achat */}
-                    <div className="bg-gray-50 dark:bg-slate-700/50 rounded-lg p-3">
-                      <p className="text-xs text-gray-400 mb-1">Gain pouvoir d&apos;achat CH</p>
-                      <p className={`text-base font-bold font-mono ${gainColor(p.gainReel)}`}>
-                        {p.gainReel >= 0 ? '+' : ''}{fmt(p.gainReel, 0)} CHF
-                      </p>
-                      <p className={`text-xs font-medium ${gainColor(p.gainPctReel)}`}>{pct(p.gainPctReel)}</p>
-                      <p className="text-xs text-gray-400 mt-1">
-                        Inflation: +{fmt(p.inflation * 100, 1)}%
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 pt-3 border-t border-gray-100 dark:border-slate-700 flex justify-between text-xs text-gray-400">
-                    <span>Valeur actuelle : <span className="font-mono font-medium text-slate-700 dark:text-slate-300">{fmt(p.valeurCHF, 0)} CHF</span></span>
-                    <span>Investi : <span className="font-mono">{fmt(p.coutCHF, 0)} CHF</span></span>
-                    {p.devise !== 'CHF' && (
-                      <span>Taux achat : 1 {p.devise} = {p.tauxAchatCHF} CHF → maintenant {p.tauxActuelCHF} CHF</span>
-                    )}
-                  </div>
+              {/* Stats column */}
+              <div className="lg:col-span-1 space-y-4">
+                {/* Valeur */}
+                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
+                  <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider mb-1">Valeur totale</p>
+                  <p className="text-2xl font-bold font-mono" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {fmtChf(totals.valeurTotal)}
+                  </p>
+                  <p className="text-xs text-[#9E9A93] mt-0.5">
+                    Investi: {fmtChf(totals.coutTotal)}
+                  </p>
                 </div>
+
+                {/* Gain nominal */}
+                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
+                  <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider mb-1">Gain nominal CHF</p>
+                  <p className={`text-xl font-bold font-mono ${color(totals.gainTotal)}`}>
+                    {totals.gainTotal >= 0 ? '+' : ''}{fmtChf(totals.gainTotal)}
+                  </p>
+                  <p className={`text-sm font-mono ${color(totals.gainPct)}`}>{fmtPct(totals.gainPct)}</p>
+                </div>
+
+                {/* Gain réel */}
+                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
+                  <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider mb-1">Gain réel (après inflation)</p>
+                  <p className={`text-xl font-bold font-mono ${color(totals.gainReelTotal)}`}>
+                    {totals.gainReelTotal >= 0 ? '+' : ''}{fmtChf(totals.gainReelTotal)}
+                  </p>
+                  <p className={`text-sm font-mono ${color(totals.gainReelPct)}`}>{fmtPct(totals.gainReelPct)}</p>
+                </div>
+
+                {/* Impact FX */}
+                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
+                  <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider mb-1">Impact taux de change</p>
+                  <p className={`text-xl font-bold font-mono ${color(totals.fxTotal)}`}>
+                    {totals.fxTotal >= 0 ? '+' : ''}{fmtChf(totals.fxTotal)}
+                  </p>
+                  <p className="text-xs text-[#9E9A93] mt-0.5">Effet seul des variations FX</p>
+                </div>
+              </div>
+
+              {/* Charts column */}
+              <div className="lg:col-span-2 space-y-4">
+                {/* Evolution chart */}
+                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
+                  <h3 className="text-sm font-semibold mb-3">Évolution du portefeuille</h3>
+                  <EvolChart data={positionsCalc} />
+                  <p className="text-xs text-[#9E9A93] mt-2">
+                    La valeur actuelle est estimée depuis le premier achat — sans prix historiques intermédiaires.
+                  </p>
+                </div>
+
+                {/* Allocation chart */}
+                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
+                  <h3 className="text-sm font-semibold mb-4">Allocation par catégorie</h3>
+                  <AllocChart data={positionsCalc} />
+                </div>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div className="flex gap-1 mb-4 bg-white dark:bg-[#162534] p-1 rounded-lg border border-[#DDD9D1] dark:border-[#1e3347] w-fit">
+              {(['positions', 'analyse'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    activeTab === tab
+                      ? 'bg-[#2B6B5A] text-white'
+                      : 'text-[#5C6880] hover:text-[#1B3050] dark:hover:text-white'
+                  }`}
+                >
+                  {tab === 'positions' ? 'Positions' : 'Analyse FX & Inflation'}
+                </button>
               ))}
             </div>
-          )
-        )}
 
-        {/* Tab Analyse */}
-        {activeTab === 'analyse' && (
-          <div className="space-y-5">
-            <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-6">
-              <h3 className="text-sm font-semibold mb-2">Pourquoi ces trois métriques ?</h3>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
-                {[
-                  {
-                    titre: 'Gain nominal (devise)',
-                    icone: '📈',
-                    desc: 'Ce que votre courtier affiche. Gain brut dans la devise de l\'actif, sans tenir compte du taux de change ni de l\'inflation.',
-                    exemple: 'Achat: 100 USD → Vente: 110 USD = +10 USD (+10%)',
-                  },
-                  {
-                    titre: 'Gain réel en CHF',
-                    icone: '🔄',
-                    desc: 'Le gain converti en CHF aux taux de change d\'achat ET de vente. Révèle l\'impact du change sur votre performance.',
-                    exemple: 'USD baisse de 1.05 → 1.00 : +10 USD = +100 CHF, investi 105 CHF → Gain CHF = −5 CHF',
-                  },
-                  {
-                    titre: 'Gain pouvoir d\'achat',
-                    icone: '🛒',
-                    desc: 'Le gain CHF corrigé de l\'inflation suisse (IPC). Mesure si vous êtes réellement plus riche en termes de ce que vous pouvez acheter en Suisse.',
-                    exemple: 'Gain CHF +5% avec inflation CH +5% = gain pouvoir d\'achat 0%',
-                  },
-                ].map(m => (
-                  <div key={m.titre} className="bg-gray-50 dark:bg-slate-700/50 rounded-xl p-4">
-                    <div className="text-2xl mb-2">{m.icone}</div>
-                    <p className="font-semibold text-sm mb-2">{m.titre}</p>
-                    <p className="text-xs text-gray-500 leading-relaxed mb-3">{m.desc}</p>
-                    <div className="bg-white dark:bg-slate-800 rounded-lg p-2 border border-gray-200 dark:border-slate-600">
-                      <p className="text-xs font-mono text-gray-600 dark:text-gray-400">{m.exemple}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-6">
-              <h3 className="text-sm font-semibold mb-4">Inflation suisse utilisée (IPC officiel OFS)</h3>
-              <div className="grid grid-cols-4 lg:grid-cols-8 gap-2">
-                {Object.entries(INFLATION_CH).map(([year, rate]) => (
-                  <div key={year} className="text-center">
-                    <p className="text-xs text-gray-400">{year}</p>
-                    <p className={`text-sm font-mono font-semibold ${rate > 0 ? 'text-amber-600' : 'text-teal-600'}`}>
-                      {rate > 0 ? '+' : ''}{(rate * 100).toFixed(1)}%
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {positionsCalc.length > 0 && (
-              <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 overflow-hidden">
-                <div className="p-5 border-b border-gray-100 dark:border-slate-700">
-                  <h3 className="text-sm font-semibold">Comparaison des performances</h3>
-                </div>
+            {/* Tab: Positions */}
+            {activeTab === 'positions' && (
+              <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
-                    <thead className="bg-gray-50 dark:bg-slate-700/50">
-                      <tr>
-                        <th className="text-left px-5 py-3 text-xs font-semibold text-gray-500">Position</th>
-                        <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500">Nominal ({'{'}devise{'}'})</th>
-                        <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500">Réel CHF</th>
-                        <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500">Impact FX</th>
-                        <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500">Pouvoir d&apos;achat</th>
+                    <thead>
+                      <tr className="border-b border-[#DDD9D1] dark:border-[#1e3347]">
+                        {['Position', 'Qté', 'Valeur CHF', 'Gain CHF', 'Perf.', 'Actions'].map(h => (
+                          <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#5C6880] uppercase tracking-wider">
+                            {h}
+                          </th>
+                        ))}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
+                    <tbody className="divide-y divide-[#F5F3EF] dark:divide-[#1e3347]">
                       {positionsCalc.map(p => (
-                        <tr key={p.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/30">
-                          <td className="px-5 py-3">
-                            <p className="font-medium">{p.nom}</p>
-                            <p className="text-xs text-gray-400">{p.devise} · {p.categorie}</p>
+                        <tr key={p.id} className="hover:bg-[#F5F3EF]/50 dark:hover:bg-[#1B2D3E]/50 transition-colors">
+                          <td className="px-4 py-3">
+                            <div className="font-medium">{p.nom}</div>
+                            <div className="text-xs text-[#9E9A93]">
+                              {p.ticker} · {p.categorie} · {p.devise}
+                            </div>
                           </td>
-                          <td className={`px-4 py-3 text-right font-mono text-sm ${gainColor(p.gainPctDevise)}`}>{pct(p.gainPctDevise)}</td>
-                          <td className={`px-4 py-3 text-right font-mono text-sm ${gainColor(p.gainPctCHF)}`}>{pct(p.gainPctCHF)}</td>
-                          <td className={`px-4 py-3 text-right font-mono text-sm ${gainColor(p.impactFX)}`}>
-                            {p.devise === 'CHF' ? '—' : (p.impactFX >= 0 ? '+' : '') + fmt(p.impactFX, 0) + ' CHF'}
+                          <td className="px-4 py-3 font-mono text-xs">{p.quantite}</td>
+                          <td className="px-4 py-3 font-mono">
+                            <div>{fmtChf(p.valeurCHF)}</div>
+                            <div className="text-xs text-[#9E9A93]">Coût: {fmtChf(p.coutCHF)}</div>
                           </td>
-                          <td className={`px-4 py-3 text-right font-mono text-sm ${gainColor(p.gainPctReel)}`}>{pct(p.gainPctReel)}</td>
+                          <td className={`px-4 py-3 font-mono ${color(p.gainCHF)}`}>
+                            {p.gainCHF >= 0 ? '+' : ''}{fmtChf(p.gainCHF)}
+                          </td>
+                          <td className={`px-4 py-3 font-mono font-semibold ${color(p.gainPctCHF)}`}>
+                            {fmtPct(p.gainPctCHF)}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => openEdit(p)}
+                                className="text-xs text-[#2B6B5A] hover:underline"
+                              >
+                                Modifier
+                              </button>
+                              <button
+                                onClick={() => deletePosition(p.id)}
+                                className="text-xs text-red-400 hover:underline"
+                              >
+                                Supprimer
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -523,97 +538,157 @@ export default function PortfolioPage() {
                 </div>
               </div>
             )}
-          </div>
+
+            {/* Tab: Analyse FX & Inflation */}
+            {activeTab === 'analyse' && (
+              <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] overflow-hidden">
+                {/* Legend */}
+                <div className="px-5 py-3 border-b border-[#F5F3EF] dark:border-[#1e3347] flex gap-6 text-xs text-[#9E9A93]">
+                  <span><strong className="text-[#1B3050] dark:text-[#E8E4DC]">CHF nominal</strong> — gain total en CHF</span>
+                  <span><strong className="text-[#2B6B5A]">FX uniquement</strong> — part due au change</span>
+                  <span><strong className="text-[#B5820F]">Réel</strong> — après inflation suisse (IPC OFS)</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#DDD9D1] dark:border-[#1e3347]">
+                        {['Position', 'Perf. devise', 'Perf. CHF', 'Impact FX', 'Perf. réelle'].map(h => (
+                          <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#5C6880] uppercase tracking-wider">
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#F5F3EF] dark:divide-[#1e3347]">
+                      {positionsCalc.map(p => (
+                        <tr key={p.id} className="hover:bg-[#F5F3EF]/50 dark:hover:bg-[#1B2D3E]/50 transition-colors">
+                          <td className="px-4 py-3">
+                            <div className="font-medium">{p.nom}</div>
+                            <div className="text-xs text-[#9E9A93]">{p.ticker} · Achat: {p.dateAchat}</div>
+                          </td>
+                          <td className={`px-4 py-3 font-mono ${color(p.gainPctDevise)}`}>
+                            <div>{fmtPct(p.gainPctDevise)}</div>
+                            <div className="text-xs text-[#9E9A93]">
+                              {p.gainDevise >= 0 ? '+' : ''}{p.gainDevise.toFixed(2)} {p.devise}
+                            </div>
+                          </td>
+                          <td className={`px-4 py-3 font-mono ${color(p.gainPctCHF)}`}>
+                            <div>{fmtPct(p.gainPctCHF)}</div>
+                            <div className="text-xs text-[#9E9A93]">
+                              {p.gainCHF >= 0 ? '+' : ''}{fmtChf(p.gainCHF)}
+                            </div>
+                          </td>
+                          <td className={`px-4 py-3 font-mono ${color(p.impactFX)}`}>
+                            {p.devise === 'CHF'
+                              ? <span className="text-[#9E9A93]">—</span>
+                              : <>{p.impactFX >= 0 ? '+' : ''}{fmtChf(p.impactFX)}</>
+                            }
+                          </td>
+                          <td className={`px-4 py-3 font-mono font-semibold ${color(p.gainPctReel)}`}>
+                            <div>{fmtPct(p.gainPctReel)}</div>
+                            <div className="text-xs text-[#9E9A93]">
+                              {p.gainReel >= 0 ? '+' : ''}{fmtChf(p.gainReel)}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
-      {/* Modal ajout / édition */}
-      {showForm && (
+      {/* Modal */}
+      {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-gray-100 dark:border-slate-700 flex items-center justify-between">
+          <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[#DDD9D1] dark:border-[#1e3347]">
               <h2 className="font-semibold">{editId ? 'Modifier la position' : 'Ajouter une position'}</h2>
-              <button onClick={() => setShowForm(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+              <button onClick={() => setShowModal(false)} className="text-[#9E9A93] hover:text-[#1B3050] dark:hover:text-white text-xl">×</button>
             </div>
 
             <div className="p-6 space-y-4">
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Nom de l&apos;actif *</label>
-                  <input value={form.nom} onChange={setF('nom')} placeholder="Nestlé SA" className={inputCls} />
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium text-[#5C6880] mb-1">Nom de l'actif *</label>
+                  <input className={inputCls} placeholder="Apple Inc." value={form.nom} onChange={fld('nom')} />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Ticker</label>
-                  <input value={form.ticker} onChange={setF('ticker')} placeholder="NESN" className={inputCls} />
+                  <label className="block text-xs font-medium text-[#5C6880] mb-1">Ticker</label>
+                  <input className={inputCls} placeholder="AAPL" value={form.ticker} onChange={fld('ticker')} />
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Catégorie</label>
-                  <select value={form.categorie} onChange={setF('categorie')} className={inputCls}>
+                  <label className="block text-xs font-medium text-[#5C6880] mb-1">Catégorie</label>
+                  <select className={inputCls} value={form.categorie} onChange={fld('categorie')}>
                     {CATEGORIES.map(c => <option key={c}>{c}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Devise</label>
-                  <select value={form.devise} onChange={setF('devise')} className={inputCls}>
+                  <label className="block text-xs font-medium text-[#5C6880] mb-1">Devise</label>
+                  <select className={inputCls} value={form.devise} onChange={fld('devise')}>
                     {DEVISES.map(d => <option key={d}>{d}</option>)}
                   </select>
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Quantité *</label>
-                  <input type="number" value={form.quantite || ''} onChange={setF('quantite')} placeholder="10" className={inputCls} />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Date d&apos;achat</label>
-                  <input type="date" value={form.dateAchat} onChange={setF('dateAchat')} className={inputCls} />
+                  <label className="block text-xs font-medium text-[#5C6880] mb-1">Quantité</label>
+                  <input className={inputCls} type="number" placeholder="10" value={form.quantite || ''} onChange={fld('quantite')} />
                 </div>
               </div>
 
-              <div className="border-t border-gray-100 dark:border-slate-700 pt-4">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Au moment de l&apos;achat</p>
+              <div className="border-t border-[#F5F3EF] dark:border-[#1e3347] pt-4">
+                <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider mb-3">À l'achat</p>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">Prix d&apos;achat ({form.devise}) *</label>
-                    <input type="number" value={form.prixAchat || ''} onChange={setF('prixAchat')} placeholder="100.00" className={inputCls} />
+                    <label className="block text-xs font-medium text-[#5C6880] mb-1">Prix d'achat ({form.devise})</label>
+                    <input className={inputCls} type="number" placeholder="150.00" value={form.prixAchat || ''} onChange={fld('prixAchat')} />
                   </div>
                   {form.devise !== 'CHF' && (
                     <div>
-                      <label className="block text-xs font-medium text-gray-500 mb-1">Taux 1 {form.devise} = ? CHF</label>
-                      <input type="number" value={form.tauxAchatCHF || ''} onChange={setF('tauxAchatCHF')} placeholder="1.05" className={inputCls} />
+                      <label className="block text-xs font-medium text-[#5C6880] mb-1">Taux CHF/{form.devise} à l'achat</label>
+                      <input className={inputCls} type="number" step="0.0001" placeholder="0.9200" value={form.tauxAchatCHF || ''} onChange={fld('tauxAchatCHF')} />
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-xs font-medium text-[#5C6880] mb-1">Date d'achat</label>
+                    <input className={inputCls} type="date" value={form.dateAchat} onChange={fld('dateAchat')} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-[#F5F3EF] dark:border-[#1e3347] pt-4">
+                <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider mb-3">Valeur actuelle</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-[#5C6880] mb-1">Prix actuel ({form.devise})</label>
+                    <input className={inputCls} type="number" placeholder="185.00" value={form.prixActuel || ''} onChange={fld('prixActuel')} />
+                  </div>
+                  {form.devise !== 'CHF' && (
+                    <div>
+                      <label className="block text-xs font-medium text-[#5C6880] mb-1">Taux CHF/{form.devise} actuel</label>
+                      <input className={inputCls} type="number" step="0.0001" placeholder="0.8800" value={form.tauxActuelCHF || ''} onChange={fld('tauxActuelCHF')} />
                     </div>
                   )}
                 </div>
               </div>
 
-              <div className="border-t border-gray-100 dark:border-slate-700 pt-4">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Prix actuel</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">Prix actuel ({form.devise}) *</label>
-                    <input type="number" value={form.prixActuel || ''} onChange={setF('prixActuel')} placeholder="110.00" className={inputCls} />
-                  </div>
-                  {form.devise !== 'CHF' && (
-                    <div>
-                      <label className="block text-xs font-medium text-gray-500 mb-1">Taux actuel 1 {form.devise} = ? CHF</label>
-                      <input type="number" value={form.tauxActuelCHF || ''} onChange={setF('tauxActuelCHF')} placeholder="1.00" className={inputCls} />
-                    </div>
-                  )}
-                </div>
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="flex-1 border border-[#DDD9D1] dark:border-[#2a3f52] text-[#5C6880] text-sm py-2 rounded-lg hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] transition-colors"
+                >
+                  Annuler
+                </button>
+                <button
+                  onClick={saveForm}
+                  disabled={!form.nom}
+                  className="flex-1 bg-[#2B6B5A] hover:bg-[#225549] disabled:opacity-40 text-white text-sm py-2 rounded-lg transition-colors font-medium"
+                >
+                  {editId ? 'Enregistrer' : 'Ajouter'}
+                </button>
               </div>
-            </div>
-
-            <div className="p-6 border-t border-gray-100 dark:border-slate-700 flex gap-3 justify-end">
-              <button onClick={() => setShowForm(false)} className="px-4 py-2 text-sm text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50">
-                Annuler
-              </button>
-              <button onClick={submitForm} className="px-5 py-2 text-sm bg-teal-700 text-white rounded-lg font-medium hover:bg-teal-800 transition-colors">
-                {editId ? 'Enregistrer' : 'Ajouter'}
-              </button>
             </div>
           </div>
         </div>
