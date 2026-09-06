@@ -26,7 +26,7 @@ export async function updateSession(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
 
   // Protéger les routes premium
-  const premiumRoutes = ['/simulateur', '/portfolio', '/alertes']
+  const premiumRoutes = ['/portfolio', '/alertes']
   const isPremiumRoute = premiumRoutes.some(route =>
     request.nextUrl.pathname.startsWith(route)
   )
