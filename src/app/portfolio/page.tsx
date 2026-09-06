@@ -743,37 +743,11 @@ function PnLChart({ data, showNominal, showReel }: { data: PositionCalc[]; showN
 }
 
 
-// ─── Portfolio Health Score ───────────────────────────────────────────────────
-const RISK_SCORE: Record<string, number> = {
-  'Obligations': 1, 'ETF': 3, 'Actions': 5,
-  'Matières premières': 6, 'Monnaies': 4, 'Crypto': 9,
-}
-const CONC_THRESHOLD: Record<string, number> = {
-  'Obligations': 0.55, 'ETF': 0.45, 'Actions': 0.22,
-  'Matières premières': 0.25, 'Monnaies': 0.30, 'Crypto': 0.10,
-}
-const DIV_UNITS: Record<string, number> = {
-  'ETF': 10, 'Obligations': 3, 'Matières premières': 2,
-  'Monnaies': 2, 'Actions': 1, 'Crypto': 0.5,
-}
-// Drawdown max historique sur 20 ans par catégorie (pire scénario documenté)
-// Sources : crise 2008-2009 (S&P -57%), crypto 2018 (BTC -84%), Covid -34%,
-//           crise obligataire 2022 (AGG -18%), matières 2008 (-70%)
-const MAX_DRAWDOWN: Record<string, number> = {
-  'Obligations':       0.20,  // obligations d'État courtes à longues durée 2022
-  'ETF':               0.57,  // S&P 500 crise 2008-2009 (indice large)
-  'Actions':           0.75,  // action individuelle — peut atteindre 100 %
-  'Matières premières':0.70,  // commodities index 2008, pétrole 2020
-  'Monnaies':          0.35,  // paires majeures, défauts exotiques
-  'Crypto':            0.85,  // BTC nov. 2021 → déc. 2022 ; altcoins > 95 %
-}
-
 const CATS = ['Obligations', 'ETF', 'Actions', 'Matières premières', 'Monnaies', 'Crypto']
 const CAT_VOL: Record<string, number> = {
   'Obligations': 0.08, 'ETF': 0.15, 'Actions': 0.25,
   'Matières premières': 0.20, 'Monnaies': 0.12, 'Crypto': 0.70,
 }
-// Matrice de corrélation inter-catégories (estimations académiques long terme)
 const CORR: Record<string, Record<string, number>> = {
   'Obligations':        { 'Obligations': 1.00, 'ETF': -0.10, 'Actions': -0.05, 'Matières premières':  0.05, 'Monnaies': -0.15, 'Crypto':  0.00 },
   'ETF':                { 'Obligations': -0.10, 'ETF': 1.00, 'Actions':  0.80, 'Matières premières':  0.30, 'Monnaies':  0.10, 'Crypto':  0.20 },
@@ -783,223 +757,7 @@ const CORR: Record<string, Record<string, number>> = {
   'Crypto':             { 'Obligations':  0.00, 'ETF': 0.20, 'Actions':  0.25, 'Matières premières':  0.10, 'Monnaies':  0.05, 'Crypto':  1.00 },
 }
 
-function computeHealth(data: PositionCalc[]) {
-  const total = data.reduce((s, p) => s + p.valeurCHF, 0)
-  if (total <= 0 || data.length === 0) return null
-
-  // ── 1. Concentration ajustée au risque (20 pts) ──
-  let concPenalty = 0
-  const posDetails: { nom: string; ticker: string; cat: string; w: number; riskW: number }[] = []
-  for (const p of data) {
-    const w = p.valeurCHF / total
-    const risk = RISK_SCORE[p.categorie] ?? 5
-    const thresh = CONC_THRESHOLD[p.categorie] ?? 0.25
-    const overweight = Math.max(0, w - thresh)
-    const penalty = overweight > 0 ? (overweight / (1 - thresh)) * risk * 20 / 9 : 0
-    concPenalty += penalty
-    posDetails.push({ nom: p.nom, ticker: p.ticker, cat: p.categorie, w, riskW: w * risk })
-  }
-  const scoreConc = Math.max(0, Math.round(20 - concPenalty))
-
-  // ── 2. Diversification effective (10 pts) ──
-  let divUnits = 0
-  for (const p of data) divUnits += (DIV_UNITS[p.categorie] ?? 1) * (p.valeurCHF / total)
-  const scoreDiv = Math.min(10, Math.round((divUnits / 6) * 10))
-
-  // ── 3. Volatilité du portefeuille — matrice de corrélation (20 pts) ──
-  // Poids par catégorie agrégés, puis σ_p = √(ΣᵢΣⱼ wᵢwⱼσᵢσⱼρᵢⱼ)
-  const catW: Record<string, number> = {}
-  for (const p of data) catW[p.categorie] = (catW[p.categorie] ?? 0) + p.valeurCHF / total
-  let variance = 0
-  for (const ci of CATS) {
-    for (const cj of CATS) {
-      const wi = catW[ci] ?? 0; const wj = catW[cj] ?? 0
-      variance += wi * wj * (CAT_VOL[ci] ?? 0.15) * (CAT_VOL[cj] ?? 0.15) * (CORR[ci]?.[cj] ?? 0)
-    }
-  }
-  const sigmaAnnual = Math.sqrt(Math.max(0, variance))
-  const sigmaMonthly = sigmaAnnual / Math.sqrt(12)
-  const var95Monthly = Math.round(sigmaMonthly * 1.645 * 100) // % de la valeur du portefeuille
-  const scoreVol = sigmaAnnual < 0.07 ? 20 : sigmaAnnual < 0.12 ? 17 : sigmaAnnual < 0.18 ? 13
-    : sigmaAnnual < 0.25 ? 8 : sigmaAnnual < 0.40 ? 3 : 0
-
-  // ── 4. Corrélation inter-actifs (15 pts) ──
-  // ρ_portfolio = corrélation moyenne pondérée entre toutes les paires de catégories
-  // Un portefeuille décorrélé (obligations + actions + crypto) score mieux
-  let corrNum = 0; let corrDen = 0
-  for (const ci of CATS) {
-    for (const cj of CATS) {
-      if (ci === cj) continue
-      const wi = catW[ci] ?? 0; const wj = catW[cj] ?? 0
-      const sisj = (CAT_VOL[ci] ?? 0.15) * (CAT_VOL[cj] ?? 0.15)
-      corrNum += wi * wj * sisj * (CORR[ci]?.[cj] ?? 0)
-      corrDen += wi * wj * sisj
-    }
-  }
-  const rhoAvg = corrDen > 0.0001 ? corrNum / corrDen : 0
-  const scoreCorr = rhoAvg < 0 ? 15 : rhoAvg < 0.15 ? 13 : rhoAvg < 0.30 ? 10 : rhoAvg < 0.50 ? 6 : rhoAvg < 0.70 ? 2 : 0
-
-  // ── 5. Résistance aux crises — drawdown max estimé (20 pts) ──
-  let drawdownEst = 0
-  for (const p of data) drawdownEst += (p.valeurCHF / total) * (MAX_DRAWDOWN[p.categorie] ?? 0.60)
-  const drawdownPct = Math.round(drawdownEst * 100)
-  const scoreDd = drawdownEst < 0.25 ? 20 : drawdownEst < 0.40 ? 16 : drawdownEst < 0.55 ? 11 : drawdownEst < 0.68 ? 5 : 0
-
-  // ── 6. Sharpe ratio (15 pts) ──
-  // Rendement annualisé depuis le premier achat vs. taux sans risque CHF (~0.8 %)
-  const totalCost = data.reduce((s, p) => s + p.coutCHF, 0)
-  const totalReturn = totalCost > 0 ? (total - totalCost) / totalCost : 0
-  const oldestDate = data.reduce((m, p) => p.dateAchat < m ? p.dateAchat : m, data[0].dateAchat)
-  const yearsHeld = (Date.now() - new Date(oldestDate).getTime()) / (365.25 * 24 * 3600 * 1000)
-  const annualReturn = yearsHeld >= 0.25 ? Math.pow(1 + totalReturn, 1 / yearsHeld) - 1 : null
-  const sharpe = annualReturn !== null && sigmaAnnual > 0 ? (annualReturn - 0.008) / sigmaAnnual : null
-  const scoreSharpe = sharpe === null ? 7
-    : sharpe > 2.0 ? 15 : sharpe > 1.5 ? 12 : sharpe > 1.0 ? 9 : sharpe > 0.5 ? 5 : sharpe > 0 ? 2 : 0
-
-  const total100 = scoreConc + scoreDiv + scoreVol + scoreCorr + scoreDd + scoreSharpe
-
-  // ── Niveau de risque global (informatif) ──
-  const riskAvg = posDetails.reduce((s, p) => s + p.riskW, 0)
-
-  // ── Exposition devise (informatif uniquement) ──
-  const devises = new Map<string, number>()
-  for (const p of data) devises.set(p.devise, (devises.get(p.devise) ?? 0) + p.valeurCHF / total)
-
-  // ── Recommandations ──
-  const recs: string[] = []
-  const topRisk = [...posDetails].sort((a, b) => b.riskW - a.riskW)[0]
-  if (topRisk && topRisk.riskW > 0.18)
-    recs.push(`${topRisk.nom} (${(topRisk.w * 100).toFixed(0)} %) représente une exposition au risque élevée — pensez à réduire ou couvrir.`)
-  const cryptoW = posDetails.filter(p => p.cat === 'Crypto').reduce((s, p) => s + p.w, 0)
-  if (cryptoW > 0.12)
-    recs.push(`Vos crypto-actifs totalisent ${(cryptoW * 100).toFixed(0)} % — en cas de crise, un drawdown de ~85 % est historiquement documenté sur cette classe.`)
-  if (drawdownEst >= 0.55)
-    recs.push(`Drawdown estimé élevé (${drawdownPct} %) — votre portefeuille pourrait perdre plus de la moitié de sa valeur en scénario de crise simultanée.`)
-  if (sigmaAnnual > 0.25)
-    recs.push(`Volatilité annuelle estimée à ${Math.round(sigmaAnnual * 100)} % — votre portefeuille est exposé à des fluctuations importantes.`)
-  const hasETF = data.some(p => p.categorie === 'ETF')
-  if (!hasETF && data.length > 0)
-    recs.push('Aucun ETF dans votre portefeuille — un ETF indiciel (MSCI World, S&P 500) apporte une diversification immédiate.')
-  const hasBond = data.some(p => p.categorie === 'Obligations')
-  if (!hasBond && riskAvg > 4)
-    recs.push('Ajoutez des obligations pour réduire la volatilité et le drawdown maximal du portefeuille.')
-  if (sharpe !== null && sharpe < 0.5)
-    recs.push(`Sharpe ratio faible (${sharpe.toFixed(2)}) — le rendement obtenu ne compense pas suffisamment le risque pris.`)
-  if (recs.length === 0)
-    recs.push('Votre portefeuille est bien structuré. Continuez à surveiller la concentration et à rééquilibrer régulièrement.')
-
-  return { total100, scoreConc, scoreDiv, scoreVol, scoreCorr, scoreDd, scoreSharpe, riskAvg, drawdownEst, drawdownPct, sigmaAnnual, var95Monthly, rhoAvg, sharpe, annualReturn, recs, posDetails, devises }
-}
-
-function PortfolioHealth({ data }: { data: PositionCalc[] }) {
-  const h = computeHealth(data)
-  if (!h) return null
-
-  const { total100, scoreConc, scoreDiv, scoreVol, scoreCorr, scoreDd, scoreSharpe, riskAvg, drawdownEst, drawdownPct, sigmaAnnual, var95Monthly, rhoAvg, sharpe, annualReturn, recs, devises } = h
-
-  const grade = total100 >= 85 ? 'A' : total100 >= 70 ? 'B' : total100 >= 50 ? 'C' : total100 >= 30 ? 'D' : 'E'
-  const gradeColor = grade === 'A' ? '#2B6B5A' : grade === 'B' ? '#1B5C80' : grade === 'C' ? '#B5820F' : grade === 'D' ? '#DC6B2B' : '#DC2626'
-  const gradeBg = grade === 'A' ? 'bg-[#2B6B5A]/10' : grade === 'B' ? 'bg-[#1B5C80]/10' : grade === 'C' ? 'bg-[#B5820F]/10' : grade === 'D' ? 'bg-[#DC6B2B]/10' : 'bg-red-50 dark:bg-red-900/10'
-
-  const riskLabel = riskAvg < 2 ? 'Très défensif' : riskAvg < 3.5 ? 'Défensif' : riskAvg < 5.5 ? 'Équilibré' : riskAvg < 7 ? 'Dynamique' : 'Agressif'
-  const riskPct = Math.round((riskAvg / 9) * 100)
-
-  const ddColor = drawdownEst < 0.25 ? '#2B6B5A' : drawdownEst < 0.40 ? '#1B5C80' : drawdownEst < 0.55 ? '#B5820F' : drawdownEst < 0.68 ? '#DC6B2B' : '#DC2626'
-  const ddLabel = drawdownEst < 0.25 ? 'Faible' : drawdownEst < 0.40 ? 'Modéré' : drawdownEst < 0.55 ? 'Élevé' : drawdownEst < 0.68 ? 'Très élevé' : 'Extrême'
-  const volColor = sigmaAnnual < 0.07 ? '#2B6B5A' : sigmaAnnual < 0.12 ? '#1B5C80' : sigmaAnnual < 0.18 ? '#B5820F' : sigmaAnnual < 0.25 ? '#DC6B2B' : '#DC2626'
-  const volLabel = sigmaAnnual < 0.07 ? 'Très faible' : sigmaAnnual < 0.12 ? 'Faible' : sigmaAnnual < 0.18 ? 'Modérée' : sigmaAnnual < 0.25 ? 'Élevée' : 'Très élevée'
-  const sharpeLabel = sharpe === null ? 'N/A (< 3 mois)' : sharpe > 2 ? 'Excellent' : sharpe > 1 ? 'Bon' : sharpe > 0.5 ? 'Passable' : sharpe > 0 ? 'Faible' : 'Négatif'
-  const sharpeColor = sharpe === null ? '#9E9A93' : sharpe > 1.5 ? '#2B6B5A' : sharpe > 0.5 ? '#1B5C80' : sharpe > 0 ? '#B5820F' : '#DC2626'
-  const corrColor = rhoAvg < 0 ? '#2B6B5A' : rhoAvg < 0.30 ? '#1B5C80' : rhoAvg < 0.50 ? '#B5820F' : '#DC2626'
-  const corrLabel = rhoAvg < 0 ? 'Décorrélé' : rhoAvg < 0.15 ? 'Faible' : rhoAvg < 0.30 ? 'Modérée' : rhoAvg < 0.50 ? 'Élevée' : 'Forte'
-
-  // Currency disclaimer text
-  const deviseList = [...devises.entries()].sort((a, b) => b[1] - a[1])
-  const deviseText = deviseList.map(([d, w]) => `${d} ${(w * 100).toFixed(0)} %`).join(' · ')
-
-  const dims = [
-    { label: 'Concentration', sub: 'Risque par position', score: scoreConc, max: 20 },
-    { label: 'Diversification effective', sub: 'ETF > Actions > Crypto', score: scoreDiv, max: 10 },
-    { label: 'Volatilité portefeuille', sub: `σ ~${Math.round(sigmaAnnual * 100)} % · VaR 95 % : ${var95Monthly} %/mois (${volLabel})`, score: scoreVol, max: 20, accent: volColor },
-    { label: 'Corrélation inter-actifs', sub: `ρ moyen : ${rhoAvg.toFixed(2)} — ${corrLabel}`, score: scoreCorr, max: 15, accent: corrColor },
-    { label: 'Résistance aux crises', sub: `Drawdown max estimé : ${drawdownPct} % (${ddLabel})`, score: scoreDd, max: 20, accent: ddColor },
-    { label: 'Sharpe ratio', sub: sharpe !== null ? `${sharpe.toFixed(2)} — ${sharpeLabel}` : sharpeLabel, score: scoreSharpe, max: 15, accent: sharpeColor },
-  ]
-
-  return (
-    <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5 mb-6">
-      <div className="flex items-start gap-5">
-        {/* Grade */}
-        <div className={`flex-shrink-0 w-20 h-20 rounded-2xl ${gradeBg} flex flex-col items-center justify-center`}>
-          <span className="text-3xl font-bold" style={{ color: gradeColor }}>{grade}</span>
-          <span className="text-xs font-semibold" style={{ color: gradeColor }}>{total100}/100</span>
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h3 className="text-sm font-semibold text-[#1B3050] dark:text-[#E8E4DC]">Santé du portefeuille</h3>
-              <p className="text-xs text-[#9E9A93] mt-0.5">Concentration · Diversification · Volatilité · Corrélation · Drawdown · Sharpe</p>
-            </div>
-            {/* Risk gauge */}
-            <div className="text-right">
-              <p className="text-xs text-[#9E9A93] mb-1">Niveau de risque global</p>
-              <div className="flex items-center gap-2 justify-end">
-                <div className="w-28 h-1.5 rounded-full bg-gradient-to-r from-[#2B6B5A] via-[#B5820F] to-[#DC2626] relative">
-                  <div className="absolute -top-0.5 w-2.5 h-2.5 rounded-full bg-white border-2 border-[#1B3050] dark:border-[#E8E4DC] shadow"
-                    style={{ left: `calc(${riskPct}% - 5px)` }} />
-                </div>
-                <span className="text-xs font-semibold text-[#5C6880]">{riskLabel}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Dimension bars */}
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2.5">
-            {dims.map(d => {
-              const pct = Math.round((d.score / d.max) * 100)
-              const barColor = (d as {accent?: string}).accent ?? (pct >= 75 ? '#2B6B5A' : pct >= 45 ? '#B5820F' : '#DC2626')
-              return (
-                <div key={d.label}>
-                  <div className="flex justify-between items-baseline mb-1">
-                    <span className="text-xs font-medium text-[#1B3050] dark:text-[#E8E4DC]">{d.label}</span>
-                    <span className="text-xs font-mono text-[#9E9A93]">{d.score}/{d.max}</span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-[#F5F3EF] dark:bg-[#0F1E2C]">
-                    <div className="h-1.5 rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: barColor }} />
-                  </div>
-                  <p className="text-[10px] text-[#9E9A93] mt-0.5">{d.sub}</p>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* Currency disclaimer */}
-      <div className="mt-3 px-3 py-2 rounded-lg bg-[#F5F3EF] dark:bg-[#0F1E2C] flex items-start gap-2">
-        <span className="text-[10px] text-[#9E9A93] flex-shrink-0 mt-0.5">ⓘ</span>
-        <p className="text-[10px] text-[#9E9A93] leading-relaxed">
-          <span className="font-medium">Exposition devises :</span> {deviseText || '—'}. Le risque de change n'est pas inclus dans le score — il dépend de votre domicile fiscal et de votre horizon d'investissement.
-        </p>
-      </div>
-
-      {/* Recommendations */}
-      {recs.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-[#DDD9D1] dark:border-[#1e3347] space-y-1.5">
-          {recs.map((r, i) => (
-            <div key={i} className="flex items-start gap-2 text-xs text-[#5C6880]">
-              <span className="mt-0.5 flex-shrink-0 text-[#B5820F]">›</span>
-              <span>{r}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Chart: Allocation ────────────────────────────────────────────────────────
+// ─── Chart: Allocation ────────────────────────────────────────────
 function AllocChart({ data }: { data: PositionCalc[] }) {
   const totalVal = data.reduce((s, p) => s + p.valeurCHF, 0)
   if (totalVal <= 0) return null
@@ -1029,6 +787,437 @@ function AllocChart({ data }: { data: PositionCalc[] }) {
   )
 }
 
+// ─── Investor Profile ────────────────────────────────────────────────────────
+const RF_RATE = 0.008
+const MKT_ER  = 0.095
+const BETA: Record<string, number> = {
+  'Obligations': 0.05, 'ETF': 1.00, 'Actions': 1.25,
+  'Matières premières': 0.55, 'Monnaies': 0.15, 'Crypto': 1.80,
+}
+const EXPECTED_RETURN: Record<string, number> = Object.fromEntries(
+  Object.entries(BETA).map(([k, b]) => [k, RF_RATE + b * (MKT_ER - RF_RATE)])
+)
+const STRESS: { label: string; shocks: Record<string, number> }[] = [
+  { label: 'Grande Crise Financière 2008', shocks: { 'Obligations': -0.03, 'ETF': -0.57, 'Actions': -0.75, 'Matières premières': -0.70, 'Monnaies': -0.10, 'Crypto': 0 } },
+  { label: 'COVID-19 Mars 2020',           shocks: { 'Obligations':  0.05, 'ETF': -0.34, 'Actions': -0.45, 'Matières premières': -0.32, 'Monnaies':  0.00, 'Crypto': -0.50 } },
+  { label: 'Choc taux 2022',               shocks: { 'Obligations': -0.20, 'ETF': -0.19, 'Actions': -0.25, 'Matières premières':  0.25, 'Monnaies':  0.08, 'Crypto': -0.75 } },
+]
+interface InvProfile {
+  horizon: number
+  loss: number
+  liquidity: 'haute' | 'moyenne' | 'faible'
+  objective: 'inflation' | 'modéré' | 'croissance' | 'agressif'
+}
+
+function normalRand(): number {
+  let u = 0, v = 0
+  while (!u) u = Math.random()
+  while (!v) v = Math.random()
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
+}
+function pctile(arr: number[], p: number): number {
+  const s = [...arr].sort((a, b) => a - b)
+  return s[Math.min(Math.floor(p / 100 * s.length), s.length - 1)]
+}
+function portfolioSigma(catWeights: Record<string, number>): number {
+  let v = 0
+  for (const ci of CATS) for (const cj of CATS)
+    v += (catWeights[ci] ?? 0) * (catWeights[cj] ?? 0) * (CAT_VOL[ci] ?? 0.15) * (CAT_VOL[cj] ?? 0.15) * (CORR[ci]?.[cj] ?? 0)
+  return Math.sqrt(Math.max(0, v))
+}
+function portfolioER(catWeights: Record<string, number>): number {
+  return CATS.reduce((s, c) => s + (catWeights[c] ?? 0) * (EXPECTED_RETURN[c] ?? RF_RATE), 0)
+}
+
+function InvestorProfileSection({
+  data, profile, setProfile,
+}: {
+  data: PositionCalc[]
+  profile: InvProfile
+  setProfile: React.Dispatch<React.SetStateAction<InvProfile>>
+}) {
+  const [tab, setTab] = React.useState<'stats' | 'montecarlo' | 'stress' | 'frontier'>('stats')
+
+  const hasPositions = data.length > 0
+  const total = data.reduce((s, p) => s + p.valeurCHF, 0)
+
+  // ── Poids par catégorie ──
+  const catWeights = React.useMemo(() => {
+    const w: Record<string, number> = {}
+    if (total <= 0) return w
+    for (const p of data) w[p.categorie] = (w[p.categorie] ?? 0) + p.valeurCHF / total
+    return w
+  }, [data, total])
+
+  // ── Métriques de base ──
+  const sigma   = React.useMemo(() => portfolioSigma(catWeights), [catWeights])
+  const er      = React.useMemo(() => portfolioER(catWeights), [catWeights])
+  const sharpe  = sigma > 0 ? (er - RF_RATE) / sigma : 0
+  const var95   = er - 1.645 * sigma
+  const cvar95  = er - 2.063 * sigma
+  const hhi     = Object.values(catWeights).reduce((s, w) => s + w * w, 0)
+  const effN    = hhi > 0 ? 1 / hhi : 0
+  const var95m  = er / 12 - 1.645 * sigma / Math.sqrt(12)
+
+  // ── Type de profil dérivé ──
+  const profileType = React.useMemo(() => {
+    let score = 0
+    score += profile.horizon >= 20 ? 4 : profile.horizon >= 10 ? 3 : profile.horizon >= 5 ? 2 : 1
+    score += profile.loss >= 40 ? 4 : profile.loss >= 25 ? 3 : profile.loss >= 15 ? 2 : 1
+    score += profile.liquidity === 'faible' ? 3 : profile.liquidity === 'moyenne' ? 2 : 1
+    score += profile.objective === 'agressif' ? 4 : profile.objective === 'croissance' ? 3 : profile.objective === 'modéré' ? 2 : 1
+    if (score <= 5)  return { label: 'Prudent',    color: '#3B82F6', desc: 'Capital preservation, faible risque.' }
+    if (score <= 8)  return { label: 'Défensif',   color: '#22C55E', desc: 'Rendement régulier, volatilité limitée.' }
+    if (score <= 11) return { label: 'Équilibré',  color: '#F59E0B', desc: 'Équilibre croissance / sécurité.' }
+    if (score <= 14) return { label: 'Dynamique',  color: '#F97316', desc: 'Croissance prioritaire, tolérance modérée.' }
+    return                { label: 'Agressif',   color: '#EF4444', desc: 'Maximisation du rendement long terme.' }
+  }, [profile])
+
+  // ── Monte Carlo ──
+  const mcPaths = React.useMemo(() => {
+    if (!hasPositions || sigma === 0) return []
+    const N = 500, T = profile.horizon, dt = 1
+    const paths: number[][] = []
+    for (let i = 0; i < N; i++) {
+      const path = [1.0]
+      for (let t = 0; t < T; t++) {
+        const prev = path[path.length - 1]
+        path.push(prev * Math.exp((er - sigma * sigma / 2) * dt + sigma * Math.sqrt(dt) * normalRand()))
+      }
+      paths.push(path)
+    }
+    return paths
+  }, [hasPositions, sigma, er, profile.horizon])
+
+  const mcBands = React.useMemo(() => {
+    if (mcPaths.length === 0) return []
+    const T = profile.horizon + 1
+    return Array.from({ length: T }, (_, t) => {
+      const vals = mcPaths.map(p => p[t])
+      return {
+        p5:  pctile(vals, 5),
+        p25: pctile(vals, 25),
+        p50: pctile(vals, 50),
+        p75: pctile(vals, 75),
+        p95: pctile(vals, 95),
+      }
+    })
+  }, [mcPaths, profile.horizon])
+
+  // ── Stress tests ──
+  const stressResults = React.useMemo(() => {
+    if (!hasPositions) return []
+    return STRESS.map(sc => {
+      const loss = CATS.reduce((s, c) => s + (catWeights[c] ?? 0) * (sc.shocks[c] ?? 0), 0)
+      const recovery = loss < 0 ? Math.ceil(Math.log(1 / (1 + loss)) / Math.log(1 + er)) : 0
+      return { ...sc, loss, recovery }
+    })
+  }, [catWeights, hasPositions, er])
+
+  // ── Frontière efficiente ──
+  const frontier = React.useMemo(() => {
+    if (!hasPositions) return { pts: [], current: null, maxSharpe: null, minSigma: null }
+    const pts: { r: number; s: number; sh: number }[] = []
+    for (let i = 0; i < 500; i++) {
+      const raws = CATS.map(() => -Math.log(Math.random()))
+      const sum  = raws.reduce((a, b) => a + b, 0)
+      const w: Record<string, number> = {}
+      CATS.forEach((c, j) => { w[c] = raws[j] / sum })
+      const r = portfolioER(w), s = portfolioSigma(w)
+      pts.push({ r, s, sh: s > 0 ? (r - RF_RATE) / s : 0 })
+    }
+    const current  = { r: er, s: sigma, sh: sharpe }
+    const maxSharpe = pts.reduce((b, p) => p.sh > b.sh ? p : b, pts[0])
+    const minSigma  = pts.reduce((b, p) => p.s < b.s  ? p : b, pts[0])
+    return { pts, current, maxSharpe, minSigma }
+  }, [hasPositions, catWeights, er, sigma, sharpe])
+
+  // ── SVG helpers ──
+  const W = 560, H = 220, PAD = { t: 16, r: 16, b: 32, l: 52 }
+  const PW = W - PAD.l - PAD.r, PH = H - PAD.t - PAD.b
+
+  function mcSVG() {
+    if (mcBands.length < 2) return null
+    const T = mcBands.length
+    const allVals = mcBands.flatMap(b => [b.p5, b.p95])
+    const minY = Math.min(...allVals), maxY = Math.max(...allVals)
+    const xS = (i: number) => PAD.l + (i / (T - 1)) * PW
+    const yS = (v: number) => PAD.t + PH - ((v - minY) / (maxY - minY || 1)) * PH
+    const line = (key: 'p5' | 'p25' | 'p50' | 'p75' | 'p95') =>
+      mcBands.map((b, i) => `${i === 0 ? 'M' : 'L'}${xS(i).toFixed(1)},${yS(b[key]).toFixed(1)}`).join(' ')
+    const area = (hi: 'p95' | 'p75', lo: 'p5' | 'p25') => {
+      const fwd = mcBands.map((b, i) => `${i === 0 ? 'M' : 'L'}${xS(i).toFixed(1)},${yS(b[hi]).toFixed(1)}`).join(' ')
+      const bwd = [...mcBands].reverse().map((b, i) => `L${xS(T - 1 - i).toFixed(1)},${yS(b[lo]).toFixed(1)}`).join(' ')
+      return fwd + bwd + 'Z'
+    }
+    const ticks = Array.from({ length: 5 }, (_, i) => {
+      const v = minY + (i / 4) * (maxY - minY)
+      return { y: yS(v), label: `×${v.toFixed(2)}` }
+    })
+    const xTicks = Array.from({ length: Math.min(T, 6) }, (_, i) => {
+      const idx = Math.round(i * (T - 1) / 5)
+      return { x: xS(idx), label: `Y${idx}` }
+    })
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 220 }}>
+        <defs>
+          <linearGradient id="mc-g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#2B6B5A" stopOpacity="0.25"/><stop offset="100%" stopColor="#2B6B5A" stopOpacity="0.05"/></linearGradient>
+          <linearGradient id="mc-g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#2B6B5A" stopOpacity="0.12"/><stop offset="100%" stopColor="#2B6B5A" stopOpacity="0.03"/></linearGradient>
+        </defs>
+        {ticks.map((tk, i) => (
+          <g key={i}>
+            <line x1={PAD.l} x2={W - PAD.r} y1={tk.y} y2={tk.y} stroke="#DDD9D1" strokeWidth="0.5" strokeDasharray="3,3"/>
+            <text x={PAD.l - 4} y={tk.y + 4} textAnchor="end" fontSize="9" fill="#8899AA">{tk.label}</text>
+          </g>
+        ))}
+        {xTicks.map((tk, i) => <text key={i} x={tk.x} y={H - 6} textAnchor="middle" fontSize="9" fill="#8899AA">{tk.label}</text>)}
+        <path d={area('p95', 'p5')}  fill="url(#mc-g2)"/>
+        <path d={area('p75', 'p25')} fill="url(#mc-g1)"/>
+        <path d={line('p95')} fill="none" stroke="#2B6B5A" strokeWidth="0.8" strokeDasharray="4,2"/>
+        <path d={line('p5')}  fill="none" stroke="#2B6B5A" strokeWidth="0.8" strokeDasharray="4,2"/>
+        <path d={line('p75')} fill="none" stroke="#2B6B5A" strokeWidth="1.2"/>
+        <path d={line('p25')} fill="none" stroke="#2B6B5A" strokeWidth="1.2"/>
+        <path d={line('p50')} fill="none" stroke="#2B6B5A" strokeWidth="2"/>
+        <circle cx={xS(T - 1)} cy={yS(mcBands[T - 1].p50)} r="3" fill="#2B6B5A"/>
+      </svg>
+    )
+  }
+
+  function frontierSVG() {
+    const { pts, current, maxSharpe, minSigma } = frontier
+    if (!pts.length || !current) return null
+    const xs = pts.map(p => p.s), ys = pts.map(p => p.r)
+    const minX = Math.min(...xs), maxX = Math.max(...xs)
+    const minYv = Math.min(...ys), maxYv = Math.max(...ys)
+    const xS = (v: number) => PAD.l + ((v - minX) / (maxX - minX || 1)) * PW
+    const yS = (v: number) => PAD.t + PH - ((v - minYv) / (maxYv - minYv || 1)) * PH
+    const tX = Array.from({ length: 5 }, (_, i) => {
+      const v = minX + (i / 4) * (maxX - minX)
+      return { x: xS(v), label: `${(v * 100).toFixed(0)}%` }
+    })
+    const tY = Array.from({ length: 5 }, (_, i) => {
+      const v = minYv + (i / 4) * (maxYv - minYv)
+      return { y: yS(v), label: `${(v * 100).toFixed(1)}%` }
+    })
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 220 }}>
+        {tY.map((tk, i) => (
+          <g key={i}>
+            <line x1={PAD.l} x2={W - PAD.r} y1={tk.y} y2={tk.y} stroke="#DDD9D1" strokeWidth="0.5" strokeDasharray="3,3"/>
+            <text x={PAD.l - 4} y={tk.y + 4} textAnchor="end" fontSize="9" fill="#8899AA">{tk.label}</text>
+          </g>
+        ))}
+        {tX.map((tk, i) => <text key={i} x={tk.x} y={H - 6} textAnchor="middle" fontSize="9" fill="#8899AA">{tk.label}</text>)}
+        <text x={PAD.l + PW / 2} y={H - 2} textAnchor="middle" fontSize="9" fill="#8899AA">σ (risque)</text>
+        <text x={10} y={PAD.t + PH / 2} textAnchor="middle" fontSize="9" fill="#8899AA" transform={`rotate(-90,10,${PAD.t + PH / 2})`}>E(R)</text>
+        {pts.map((p, i) => <circle key={i} cx={xS(p.s)} cy={yS(p.r)} r="2" fill="#2B6B5A" fillOpacity="0.25"/>)}
+        {minSigma  && <circle cx={xS(minSigma.s)}  cy={yS(minSigma.r)}  r="5" fill="#3B82F6" stroke="white" strokeWidth="1.5"/>}
+        {maxSharpe && <circle cx={xS(maxSharpe.s)} cy={yS(maxSharpe.r)} r="5" fill="#F59E0B" stroke="white" strokeWidth="1.5"/>}
+        <circle cx={xS(current.s)} cy={yS(current.r)} r="6" fill="#EF4444" stroke="white" strokeWidth="2"/>
+        <text x={xS(current.s) + 8} y={yS(current.r) + 4} fontSize="10" fill="#EF4444" fontWeight="600">Votre portefeuille</text>
+        {maxSharpe && <text x={xS(maxSharpe.s) + 8} y={yS(maxSharpe.r) + 4} fontSize="9" fill="#F59E0B">Max Sharpe</text>}
+        {minSigma  && <text x={xS(minSigma.s) + 8}  y={yS(minSigma.r) + 4}  fontSize="9" fill="#3B82F6">Min σ</text>}
+      </svg>
+    )
+  }
+
+  const tile = (label: string, value: string, sub?: string, color?: string) => (
+    <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-4 flex flex-col gap-1">
+      <p className="text-xs text-[#5C6880] dark:text-[#7B8DA6]">{label}</p>
+      <p className="text-lg font-semibold" style={{ color: color ?? 'inherit' }}>{value}</p>
+      {sub && <p className="text-xs text-[#8899AA]">{sub}</p>}
+    </div>
+  )
+
+  const card = (label: string, active: boolean, onClick: () => void) => (
+    <button onClick={onClick}
+      className={`px-4 py-2 rounded-lg border text-sm font-medium transition-all ${active
+        ? 'bg-[#2B6B5A] text-white border-[#2B6B5A]'
+        : 'bg-white dark:bg-[#162534] text-[#5C6880] dark:text-[#7B8DA6] border-[#DDD9D1] dark:border-[#1e3347] hover:border-[#2B6B5A]'}`}>
+      {label}
+    </button>
+  )
+
+  return (
+    <div className="mt-8 space-y-6">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <div className="w-1 h-6 rounded-full bg-[#2B6B5A]"/>
+        <h2 className="text-lg font-semibold text-[#1B3050] dark:text-white">Profil d&apos;investisseur</h2>
+      </div>
+
+      {/* Questionnaire */}
+      <div className="bg-white dark:bg-[#162534] rounded-2xl border border-[#DDD9D1] dark:border-[#1e3347] p-6 space-y-6">
+
+        {/* Q1 – Horizon temporel */}
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-[#1B3050] dark:text-white">
+            1. Horizon d&apos;investissement
+            <span className="ml-2 text-[#2B6B5A] font-semibold">{profile.horizon} ans</span>
+          </p>
+          <input type="range" min="1" max="30" value={profile.horizon}
+            onChange={e => setProfile(p => ({ ...p, horizon: +e.target.value }))}
+            className="w-full accent-[#2B6B5A]"/>
+          <div className="flex justify-between text-xs text-[#8899AA]">
+            <span>1 an</span><span>5 ans</span><span>10 ans</span><span>20 ans</span><span>30 ans</span>
+          </div>
+        </div>
+
+        {/* Q2 – Tolérance aux pertes */}
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-[#1B3050] dark:text-white">2. Tolérance maximale à une perte temporaire</p>
+          <div className="flex flex-wrap gap-2">
+            {([10, 20, 30, 40, 50] as const).map(v => card(`-${v}%`, profile.loss === v, () => setProfile(p => ({ ...p, loss: v }))))}
+          </div>
+        </div>
+
+        {/* Q3 – Liquidité */}
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-[#1B3050] dark:text-white">3. Besoin de liquidité (accès rapide aux fonds)</p>
+          <div className="flex flex-wrap gap-2">
+            {(['haute', 'moyenne', 'faible'] as const).map(v => card(
+              v === 'haute' ? 'Élevée – besoin possible à court terme' : v === 'moyenne' ? 'Moyenne – quelques mois' : 'Faible – engagement long terme',
+              profile.liquidity === v,
+              () => setProfile(p => ({ ...p, liquidity: v }))
+            ))}
+          </div>
+        </div>
+
+        {/* Q4 – Objectif */}
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-[#1B3050] dark:text-white">4. Objectif de rendement principal</p>
+          <div className="flex flex-wrap gap-2">
+            {([
+              ['inflation', 'Battre l\'inflation (~2–3%)'],
+              ['modéré',   'Rendement modéré (~5–7%)'],
+              ['croissance','Croissance (~8–12%)'],
+              ['agressif', 'Maximisation (>12%)'],
+            ] as const).map(([v, lbl]) => card(lbl, profile.objective === v, () => setProfile(p => ({ ...p, objective: v }))))}
+          </div>
+        </div>
+
+        {/* Profil synthétique */}
+        <div className="flex items-center gap-4 pt-2 border-t border-[#DDD9D1] dark:border-[#1e3347]">
+          <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm" style={{ background: profileType.color }}>
+            {profileType.label[0]}
+          </div>
+          <div>
+            <p className="font-semibold" style={{ color: profileType.color }}>{profileType.label}</p>
+            <p className="text-xs text-[#5C6880] dark:text-[#7B8DA6]">{profileType.desc}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Analyses quantitatives (uniquement si positions) */}
+      {hasPositions && (
+        <div className="bg-white dark:bg-[#162534] rounded-2xl border border-[#DDD9D1] dark:border-[#1e3347] overflow-hidden">
+          {/* Tab bar */}
+          <div className="flex border-b border-[#DDD9D1] dark:border-[#1e3347] overflow-x-auto">
+            {([
+              ['stats',      'Statistiques'],
+              ['montecarlo', 'Monte Carlo'],
+              ['stress',     'Stress Tests'],
+              ['frontier',   'Frontière efficiente'],
+            ] as const).map(([key, lbl]) => (
+              <button key={key} onClick={() => setTab(key)}
+                className={`px-5 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${tab === key
+                  ? 'border-[#2B6B5A] text-[#2B6B5A]'
+                  : 'border-transparent text-[#5C6880] dark:text-[#7B8DA6] hover:text-[#1B3050] dark:hover:text-white'}`}>
+                {lbl}
+              </button>
+            ))}
+          </div>
+
+          <div className="p-6">
+
+            {/* ── Statistiques ── */}
+            {tab === 'stats' && (
+              <div className="space-y-4">
+                <p className="text-xs text-[#8899AA]">Estimations CAPM (β par catégorie), σ via matrice de corrélation 6×6, VaR paramétrique 95 %.</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {tile('E(Rp) CAPM', `${(er * 100).toFixed(2)} %`, 'Rendement attendu annuel', '#2B6B5A')}
+                  {tile('σ portefeuille', `${(sigma * 100).toFixed(2)} %`, 'Volatilité annuelle')}
+                  {tile('Ratio de Sharpe', sharpe.toFixed(3), `Rf = ${(RF_RATE * 100).toFixed(1)} %`, sharpe >= 1 ? '#22C55E' : sharpe >= 0.5 ? '#F59E0B' : '#EF4444')}
+                  {tile('VaR 95% annuelle', `${(var95 * 100).toFixed(2)} %`, 'Perte max probable sur 1 an')}
+                  {tile('CVaR 95% annuelle', `${(cvar95 * 100).toFixed(2)} %`, 'Perte moyenne au-delà de la VaR')}
+                  {tile('VaR 95% mensuelle', `${(var95m * 100).toFixed(2)} %`, 'Perte max probable sur 1 mois')}
+                  {tile('HHI concentration', hhi.toFixed(3), 'Herfindahl-Hirschman Index', hhi > 0.4 ? '#EF4444' : hhi > 0.25 ? '#F59E0B' : '#22C55E')}
+                  {tile('N effectif', effN.toFixed(1), 'Nombre effectif d\'actifs')}
+                  {tile('Horizon', `${profile.horizon} ans`, profileType.label, profileType.color)}
+                </div>
+              </div>
+            )}
+
+            {/* ── Monte Carlo ── */}
+            {tab === 'montecarlo' && (
+              <div className="space-y-4">
+                <p className="text-xs text-[#8899AA]">500 simulations log-normales sur {profile.horizon} ans. Bandes : P5–P95 (clair), P25–P75 (moyen), médiane (épais).</p>
+                <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-3 bg-[#FAFAF8] dark:bg-[#0F1E2E]">
+                  {mcSVG()}
+                </div>
+                {mcBands.length > 0 && (
+                  <div className="grid grid-cols-3 gap-3">
+                    {tile('Médiane finale', `×${mcBands[mcBands.length - 1].p50.toFixed(2)}`, `+${((mcBands[mcBands.length - 1].p50 - 1) * 100).toFixed(0)} %`, '#2B6B5A')}
+                    {tile('Optimiste P75', `×${mcBands[mcBands.length - 1].p75.toFixed(2)}`, 'Quartile supérieur')}
+                    {tile('Pessimiste P25', `×${mcBands[mcBands.length - 1].p25.toFixed(2)}`, 'Quartile inférieur', '#F97316')}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Stress Tests ── */}
+            {tab === 'stress' && (
+              <div className="space-y-4">
+                <p className="text-xs text-[#8899AA]">Chocs historiques appliqués aux poids actuels. Temps de récupération estimé avec E(Rp) CAPM.</p>
+                {stressResults.map((sc, i) => (
+                  <div key={i} className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-4 space-y-2">
+                    <div className="flex justify-between items-center">
+                      <p className="text-sm font-semibold text-[#1B3050] dark:text-white">{sc.label}</p>
+                      <span className="text-sm font-bold" style={{ color: sc.loss < -0.15 ? '#EF4444' : sc.loss < 0 ? '#F97316' : '#22C55E' }}>
+                        {sc.loss >= 0 ? '+' : ''}{(sc.loss * 100).toFixed(1)} %
+                      </span>
+                    </div>
+                    {/* Barre */}
+                    <div className="h-3 rounded-full bg-[#F0EDE8] dark:bg-[#1e3347] overflow-hidden">
+                      <div className="h-full rounded-full transition-all" style={{
+                        width: `${Math.min(100, Math.abs(sc.loss) * 100)}%`,
+                        background: sc.loss < -0.15 ? '#EF4444' : sc.loss < 0 ? '#F97316' : '#22C55E'
+                      }}/>
+                    </div>
+                    <p className="text-xs text-[#8899AA]">
+                      {sc.loss < 0
+                        ? `Récupération estimée : ~${sc.recovery} an${sc.recovery > 1 ? 's' : ''} (E(Rp) = ${(er * 100).toFixed(1)} %/an)`
+                        : 'Gain net — aucune perte de capital.'}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* ── Frontière efficiente ── */}
+            {tab === 'frontier' && (
+              <div className="space-y-4">
+                <p className="text-xs text-[#8899AA]">500 portefeuilles aléatoires (poids Dirichlet). Rouge = votre portefeuille, jaune = max Sharpe, bleu = min σ.</p>
+                <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-3 bg-[#FAFAF8] dark:bg-[#0F1E2E]">
+                  {frontierSVG()}
+                </div>
+                {frontier.maxSharpe && frontier.minSigma && (
+                  <div className="grid grid-cols-3 gap-3">
+                    {tile('Votre Sharpe', sharpe.toFixed(3), 'E(R) / σ', '#EF4444')}
+                    {tile('Max Sharpe', frontier.maxSharpe.sh.toFixed(3), `E(R) ${(frontier.maxSharpe.r * 100).toFixed(1)} % / σ ${(frontier.maxSharpe.s * 100).toFixed(1)} %`, '#F59E0B')}
+                    {tile('Min σ', `${(frontier.minSigma.s * 100).toFixed(1)} %`, `E(R) ${(frontier.minSigma.r * 100).toFixed(1)} %`, '#3B82F6')}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function PortfolioPage() {
   const [positions, setPositions] = useState<Position[]>([])
@@ -1045,6 +1234,12 @@ export default function PortfolioPage() {
   const [fetchModalError, setFetchModalError] = useState<string | null>(null)
   const [fetchingAchat, setFetchingAchat] = useState(false)
   const [manuel, setManuel] = useState(false)
+  const [profile, setProfile] = useState<InvProfile>({
+    horizon: 10,
+    loss: 25,
+    liquidity: 'moyenne',
+    objective: 'modéré',
+  })
 
   // Profil courtier actif (basé sur form.courtier)
   const brokerProfile = form.courtier ? BROKER_PROFILES[form.courtier] : null
@@ -1363,7 +1558,7 @@ export default function PortfolioPage() {
               </div>
             </div>
 
-            <PortfolioHealth data={positionsCalc} />
+            <InvestorProfileSection data={positionsCalc} profile={profile} setProfile={setProfile} />
             <div className="flex gap-1 mb-4 bg-white dark:bg-[#162534] p-1 rounded-lg border border-[#DDD9D1] dark:border-[#1e3347] w-fit">
               {(['positions', 'analyse'] as const).map(tab => (
                 <button key={tab} onClick={() => setActiveTab(tab)}
