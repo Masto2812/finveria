@@ -1091,7 +1091,8 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
 
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
         const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
-        result.push({ x: isToday ? 1 : Math.min(t, 0.98), nominal, reel, nominalNoFX, dividendes, label })
+        // Dividendes cumulés intégrés dans nominal et réel (cohérent avec la carte Gains réalisés)
+        result.push({ x: isToday ? 1 : Math.min(t, 0.98), nominal: nominal + dividendes, reel: reel + dividendes, nominalNoFX, dividendes, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
       }
       if (!cancelled) { setMonthlyPts(result); setLoading(false) }
