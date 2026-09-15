@@ -3261,6 +3261,7 @@ export default function PortfolioPage() {
 
   async function saveForm() {
     if (!form.ticker) return
+    if (editId && sliceMode && sliceDate && form.dateAchat && sliceDate < form.dateAchat) return
     setShowModal(false)
 
     if (editId && sliceMode && sliceDate) {
@@ -4606,9 +4607,11 @@ export default function PortfolioPage() {
                           <input className={inputCls} type="date" value={sliceDate}
                             min={form.dateAchat}
                             onChange={e => setSliceDate(e.target.value)} />
-                          {form.dateAchat && (
+                          {form.dateAchat && sliceDate && sliceDate < form.dateAchat ? (
+                            <p className="text-xs mt-1 text-red-500 font-medium">La date ne peut pas être antérieure à l'ouverture ({form.dateAchat})</p>
+                          ) : form.dateAchat ? (
                             <p className="text-xs mt-1 text-[#9E9A93]">≥ date d'ouverture ({form.dateAchat})</p>
-                          )}
+                          ) : null}
                         </div>
                         <div>
                           <label className="block text-xs font-medium text-[#5C6880] mb-1">Nouvelle quantité totale</label>
@@ -4687,7 +4690,7 @@ export default function PortfolioPage() {
                   className="flex-1 border border-[#DDD9D1] dark:border-[#2a3f52] text-[#5C6880] text-sm py-2 rounded-lg hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] transition-colors">
                   Annuler
                 </button>
-                <button onClick={saveForm} disabled={!form.ticker && !form.nom}
+                <button onClick={saveForm} disabled={(!form.ticker && !form.nom) || (sliceMode && !!sliceDate && !!form.dateAchat && sliceDate < form.dateAchat)}
                   className="flex-1 bg-[#2B6B5A] hover:bg-[#225549] disabled:opacity-40 text-white text-sm py-2 rounded-lg transition-colors font-medium">
                   {editId ? (sliceMode ? "Créer l'ajustement" : 'Enregistrer') : 'Ajouter'}
                 </button>
