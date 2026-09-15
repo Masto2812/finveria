@@ -866,7 +866,7 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
         </g>
       ))}
       <g clipPath="url(#eg-clip)">
-      {showInvesti && <path d={`${costPath} L ${px(points[points.length-1].x)} ${py(minV)} L ${px(points[0].x)} ${py(minV)} Z`} fill="url(#eg-cost)" />}
+      {showInvesti && <path d={`${costPath} L ${px(points[points.length-1].x)} ${py(minVVis)} L ${px(points[0].x)} ${py(minVVis)} Z`} fill="url(#eg-cost)" />}
       {showValeur && gainD && <path d={gainD} fill="url(#eg-gain)" />}
       {showValeur && lossD && <path d={lossD} fill="url(#eg-loss)" />}
       {showInvesti && <path d={costPath} fill="none" stroke="var(--finv-cost-line)" strokeWidth="1" strokeDasharray="6 3" />}
