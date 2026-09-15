@@ -611,6 +611,21 @@ function buildColoredAreas(
   return { gainD: gain.join(' '), lossD: loss.join(' ') }
 }
 
+// ─── Shared chart utility ─────────────────────────────────────────────────────
+/** Binary-search lookup: returns closing price on or before date d.
+ *  Extracted to avoid duplication across EvolChart / PnLChart / DrawdownChart. */
+function makeLookupClose(histJson: Record<string, { dates: string[]; closes: number[] }>) {
+  return function lookupClose(ticker: string, d: string): number | null {
+    const h = histJson[ticker.toUpperCase()]
+    if (!h || h.dates.length === 0) return null
+    const lastDate = h.dates[h.dates.length - 1]
+    if (d.slice(0, 7) > lastDate.slice(0, 7)) return null
+    let lo = 0, hi = h.dates.length - 1, best = -1
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (h.dates[mid] <= d) { best = mid; lo = mid + 1 } else hi = mid - 1 }
+    return best >= 0 ? h.closes[best] : null
+  }
+}
+
 // ─── Chart: Evolution ─────────────────────────────────────────────────────────
 function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[]; showFX?: boolean; range?: 'all' | '60d' | 'weekly'; bustKey?: number }) {
   const W = 600, H = 180, PAD = { t: 16, r: 16, b: 36, l: 64 }
@@ -677,15 +692,9 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
       const fxPairs = [...new Set(data.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
       const isBust = bustKey > _bustLastSeen.current; _bustLastSeen.current = bustKey
       const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust) as Record<string, { dates: string[]; closes: number[] }>
-      function lookupClose(ticker: string, d: string): number | null {
-        const h = histJson[ticker.toUpperCase()]
-        if (!h || h.dates.length === 0) return null
-        const lastDate = h.dates[h.dates.length - 1]
-        if (d.slice(0, 7) > lastDate.slice(0, 7)) return null
-        let lo = 0, hi = h.dates.length - 1, best = -1
-        while (lo <= hi) { const mid = (lo + hi) >> 1; if (h.dates[mid] <= d) { best = mid; lo = mid + 1 } else hi = mid - 1 }
-        return best >= 0 ? h.closes[best] : null
-      }
+      const lookupClose = makeLookupClose(histJson)
+      // Pré-calcul unique : date la plus ancienne couverte par l'historique
+      const histStart = Object.values(histJson).map(h => h.dates[0]).filter(Boolean).sort()[0] ?? ''
 
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
@@ -694,9 +703,7 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
         const activePosns = data.filter(p => p.dateAchat <= dateStr)
         if (activePosns.length === 0) { setProgress(Math.round((i + 1) / dates.length * 100)); continue }
 
-        // For dates before the history window, use the oldest available history price
-        // to avoid hundreds of /api/prices calls that would rate-limit Yahoo and break recent months
-        const histStart = Object.values(histJson).map(h => h.dates[0]).filter(Boolean).sort()[0] ?? ''
+        // histStart computed once above the loop (not per iteration)
         const useOldest = !isToday && dateStr < histStart
 
         const prices = await Promise.all(activePosns.map(async p => {
@@ -1013,15 +1020,9 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
       const fxPairs = [...new Set(data.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
       const isBust = bustKey > _bustLastSeenPnL.current; _bustLastSeenPnL.current = bustKey
       const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust) as Record<string, { dates: string[]; closes: number[] }>
-      function lookupClose(ticker: string, d: string): number | null {
-        const h = histJson[ticker.toUpperCase()]
-        if (!h || h.dates.length === 0) return null
-        const lastDate = h.dates[h.dates.length - 1]
-        if (d.slice(0, 7) > lastDate.slice(0, 7)) return null
-        let lo = 0, hi = h.dates.length - 1, best = -1
-        while (lo <= hi) { const mid = (lo + hi) >> 1; if (h.dates[mid] <= d) { best = mid; lo = mid + 1 } else hi = mid - 1 }
-        return best >= 0 ? h.closes[best] : null
-      }
+      const lookupClose = makeLookupClose(histJson)
+      // Pré-calcul unique : date la plus ancienne couverte par l'historique
+      const histStart = Object.values(histJson).map(h => h.dates[0]).filter(Boolean).sort()[0] ?? ''
 
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
@@ -1030,9 +1031,7 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
         const activePosns = data.filter(p => p.dateAchat <= dateStr)
         if (activePosns.length === 0) { setProgress(Math.round((i + 1) / dates.length * 100)); continue }
 
-        // For dates before the history window, use the oldest available history price
-        // to avoid hundreds of /api/prices calls that would rate-limit Yahoo and break recent months
-        const histStart = Object.values(histJson).map(h => h.dates[0]).filter(Boolean).sort()[0] ?? ''
+        // histStart computed once above the loop (not per iteration)
         const useOldest = !isToday && dateStr < histStart
 
         const prices = await Promise.all(activePosns.map(async p => {
@@ -1384,15 +1383,7 @@ function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: Posi
       const fxPairs = [...new Set(data.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
       const isBust = bustKey > _bustLastSeenDD.current; _bustLastSeenDD.current = bustKey
       const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust) as Record<string, { dates: string[]; closes: number[] }>
-      function lookupClose(ticker: string, d: string): number | null {
-        const h = histJson[ticker.toUpperCase()]
-        if (!h || h.dates.length === 0) return null
-        const lastDate = h.dates[h.dates.length - 1]
-        if (d.slice(0, 7) > lastDate.slice(0, 7)) return null
-        let lo = 0, hi = h.dates.length - 1, best = -1
-        while (lo <= hi) { const mid = (lo + hi) >> 1; if (h.dates[mid] <= d) { best = mid; lo = mid + 1 } else hi = mid - 1 }
-        return best >= 0 ? h.closes[best] : null
-      }
+      const lookupClose = makeLookupClose(histJson)
 
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
@@ -1706,19 +1697,22 @@ function portfolioER(catWeights: Record<string, number>): number {
   return CATS.reduce((s, c) => s + (catWeights[c] ?? 0) * (EXPECTED_RETURN[c] ?? RF_RATE), 0)
 }
 
+// ─── Profile scoring (shared by InvProfileCard and InvestorProfileSection) ───
+function deriveProfileType(profile: InvProfile) {
+  let score = 0
+  score += profile.horizon >= 20 ? 4 : profile.horizon >= 10 ? 3 : profile.horizon >= 5 ? 2 : 1
+  score += profile.loss >= 40 ? 4 : profile.loss >= 25 ? 3 : profile.loss >= 15 ? 2 : 1
+  score += profile.liquidity === 'faible' ? 3 : profile.liquidity === 'moyenne' ? 2 : 1
+  score += profile.objective === 'agressif' ? 4 : profile.objective === 'croissance' ? 3 : profile.objective === 'modéré' ? 2 : 1
+  if (score <= 5)  return { label: 'Prudent',   color: '#4A7EA5', desc: 'Capital preservation, faible risque.' }
+  if (score <= 8)  return { label: 'Défensif',  color: '#4A8573', desc: 'Rendement régulier, volatilité limitée.' }
+  if (score <= 11) return { label: 'Équilibré', color: '#C4952A', desc: 'Équilibre croissance / sécurité.' }
+  if (score <= 14) return { label: 'Dynamique', color: '#B8722A', desc: 'Croissance prioritaire, tolérance modérée.' }
+  return               { label: 'Agressif',  color: '#A85050', desc: 'Maximisation du rendement long terme.' }
+}
+
 function InvProfileCard({ profile }: { profile: InvProfile }) {
-  const profileType = React.useMemo(() => {
-    let score = 0
-    score += profile.horizon >= 20 ? 4 : profile.horizon >= 10 ? 3 : profile.horizon >= 5 ? 2 : 1
-    score += profile.loss >= 40 ? 4 : profile.loss >= 25 ? 3 : profile.loss >= 15 ? 2 : 1
-    score += profile.liquidity === 'faible' ? 3 : profile.liquidity === 'moyenne' ? 2 : 1
-    score += profile.objective === 'agressif' ? 4 : profile.objective === 'croissance' ? 3 : profile.objective === 'modéré' ? 2 : 1
-    if (score <= 5)  return { label: 'Prudent',   color: '#4A7EA5', desc: 'Capital preservation, faible risque.' }
-    if (score <= 8)  return { label: 'Défensif',  color: '#4A8573', desc: 'Rendement régulier, volatilité limitée.' }
-    if (score <= 11) return { label: 'Équilibré', color: '#C4952A', desc: 'Équilibre croissance / sécurité.' }
-    if (score <= 14) return { label: 'Dynamique', color: '#B8722A', desc: 'Croissance prioritaire, tolérance modérée.' }
-    return               { label: 'Agressif',  color: '#A85050', desc: 'Maximisation du rendement long terme.' }
-  }, [profile])
+  const profileType = React.useMemo(() => deriveProfileType(profile), [profile])
 
   return (
     <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5 flex flex-col gap-4">
@@ -1915,7 +1909,6 @@ function InvestorProfileSection({
           const fxKey = `${devNorm}CHF=X`
           const fxHist = raw[fxKey]
           if (!fxHist) {
-            console.warn(`[FX stats] No data for ${fxKey} (asset: ${a.ticker})`)
             return { rets: dailyRets(a.hist!.dates, a.hist!.closes, effectiveStart), w: a.valeurCHF / inclTotal }
           }
           fxAssetsFound++
@@ -1937,7 +1930,6 @@ function InvestorProfileSection({
         const portRetsFX: number[] = []
         for (let t = 0; t < minLenFX; t++)
           portRetsFX.push(assetRetsFX.reduce((s, a) => s + a.w * (a.rets[t] ?? 0), 0))
-        console.log(`[FX stats] fxAssetsFound=${fxAssetsFound}, minLenFX=${minLenFX}, portRetsFX.length=${portRetsFX.length}`)
         const meanFX = portRetsFX.length > 0 ? portRetsFX.reduce((s, r) => s + r, 0) / portRetsFX.length : 0
         const erFXH  = meanFX * 252
         const varMFX = portRetsFX.length > 1 ? portRetsFX.reduce((s, r) => s + (r - meanFX) ** 2, 0) / (portRetsFX.length - 1) : 0
@@ -2124,18 +2116,7 @@ function InvestorProfileSection({
   const var95m  = er / 12 - 1.645 * sigma / Math.sqrt(12)
 
   // ── Type de profil dérivé ──
-  const profileType = React.useMemo(() => {
-    let score = 0
-    score += profile.horizon >= 20 ? 4 : profile.horizon >= 10 ? 3 : profile.horizon >= 5 ? 2 : 1
-    score += profile.loss >= 40 ? 4 : profile.loss >= 25 ? 3 : profile.loss >= 15 ? 2 : 1
-    score += profile.liquidity === 'faible' ? 3 : profile.liquidity === 'moyenne' ? 2 : 1
-    score += profile.objective === 'agressif' ? 4 : profile.objective === 'croissance' ? 3 : profile.objective === 'modéré' ? 2 : 1
-    if (score <= 5)  return { label: 'Prudent',    color: '#4A7EA5', desc: 'Capital preservation, faible risque.' }
-    if (score <= 8)  return { label: 'Défensif',   color: '#4A8573', desc: 'Rendement régulier, volatilité limitée.' }
-    if (score <= 11) return { label: 'Équilibré',  color: '#C4952A', desc: 'Équilibre croissance / sécurité.' }
-    if (score <= 14) return { label: 'Dynamique',  color: '#B8722A', desc: 'Croissance prioritaire, tolérance modérée.' }
-    return                { label: 'Agressif',   color: '#A85050', desc: 'Maximisation du rendement long terme.' }
-  }, [profile])
+  const profileType = React.useMemo(() => deriveProfileType(profile), [profile])
 
   // ── Monte Carlo ──
   const mcPaths = React.useMemo(() => {
