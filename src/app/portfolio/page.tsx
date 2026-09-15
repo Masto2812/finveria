@@ -861,7 +861,7 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
         <g key={i}>
           <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)} stroke="#DDD9D1" strokeWidth="0.5" strokeDasharray="3 3" />
           <text x={PAD.l - 6} y={py(v) + 4} textAnchor="end" fontSize="10" fill="#9E9A93">
-            {v >= 1000 ? `${(v / 1000).toFixed(niceStep < 1000 ? 1 : 0)}k` : v.toFixed(0)}
+            {v >= 1000 ? `${(v / 1000).toFixed(niceStepVis < 1000 ? 1 : 0)}k` : v.toFixed(0)}
           </text>
         </g>
       ))}
