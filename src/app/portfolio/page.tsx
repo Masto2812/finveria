@@ -3601,28 +3601,6 @@ export default function PortfolioPage() {
                     }
                     return s
                   }, 0)
-                  if (realizedGain === 0) return null
-                  return (
-                    <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider">Gains réalisés</p>
-                        <div className="relative group">
-                          <span className="w-4 h-4 rounded-full bg-[#DDD9D1] dark:bg-[#2a3f52] text-[#5C6880] text-[10px] font-bold flex items-center justify-center cursor-default select-none">?</span>
-                          <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 z-50 hidden group-hover:block pointer-events-none">
-                            <div className="bg-[#1B3050] dark:bg-[#0F1E2C] text-white text-xs rounded-xl p-3 shadow-xl space-y-2">
-                              <p className="font-semibold text-white/90">Gains réalisés (positions clôturées)</p>
-                              <p className="text-white/70 leading-relaxed">Somme des gains en CHF générés par toutes les positions vendues ou réduites : prix de vente × quantité − coût d&apos;achat × quantité, converti en CHF aux taux respectifs.</p>
-                              <div className="w-2 h-2 bg-[#1B3050] dark:bg-[#0F1E2C] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <p className={`text-xl font-bold font-mono ${realizedGain >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>{realizedGain >= 0 ? '+' : ''}{chf(realizedGain)}</p>
-                      <p className="text-sm font-mono text-[#9E9A93]">positions clôturées &amp; réductions</p>
-                    </div>
-                  )
-                })()}
-                {(() => {
                   const divCumul = positionsCalc.reduce((s, p) => {
                     const entry = tickerDivs[p.ticker.toUpperCase()]
                     if (!entry) return s
@@ -3635,27 +3613,42 @@ export default function PortfolioPage() {
                     return s + (entry ? p.quantite * entry.dividendTTM * p.tauxActuelCHF : 0)
                   }, 0)
                   const divYield = totals.valeurTotal > 0 ? (divTTM / totals.valeurTotal) * 100 : 0
-                  if (divCumul <= 0 && divTTM <= 0) return null
+                  const total = realizedGain + divCumul
+                  if (realizedGain === 0 && divCumul <= 0) return null
                   return (
                     <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
                       <div className="flex items-center gap-1.5 mb-1">
-                        <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider">Dividendes perçus</p>
+                        <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider">Gains réalisés</p>
                         <div className="relative group">
                           <span className="w-4 h-4 rounded-full bg-[#DDD9D1] dark:bg-[#2a3f52] text-[#5C6880] text-[10px] font-bold flex items-center justify-center cursor-default select-none">?</span>
-                          <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 z-50 hidden group-hover:block pointer-events-none">
+                          <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-72 z-50 hidden group-hover:block pointer-events-none">
                             <div className="bg-[#1B3050] dark:bg-[#0F1E2C] text-white text-xs rounded-xl p-3 shadow-xl space-y-2">
-                              <p className="font-semibold text-white/90">Dividendes perçus depuis l&apos;achat</p>
-                              <p className="text-white/70 leading-relaxed">Somme de tous les dividendes versés par chaque actif depuis ta date d&apos;achat, multipliée par ta quantité et convertie en CHF au taux actuel.</p>
-                              <div className="border-t border-white/20 pt-2">
-                                <p className="text-white/60 text-[11px] leading-relaxed">⚠️ Les ETF capitalisants (ex : CSPX, VWCE) réinvestissent automatiquement leurs dividendes dans le fonds — ils ne sont pas comptabilisés ici car non versés en cash.</p>
+                              <p className="font-semibold text-white/90">Gains réalisés + dividendes perçus</p>
+                              <p className="text-white/70 leading-relaxed">Total des gains en cash effectivement encaissés : positions clôturées/réduites + dividendes versés depuis la date d&apos;achat, convertis en CHF.</p>
+                              <div className="border-t border-white/20 pt-2 space-y-1">
+                                <p className="text-white/60 text-[11px]">· Gains clos/réductions : {realizedGain >= 0 ? '+' : ''}{chf(realizedGain)}</p>
+                                <p className="text-white/60 text-[11px]">· Dividendes perçus : +{chf(divCumul)}</p>
+                                <p className="text-white/60 text-[11px] mt-1">⚠️ Les ETF capitalisants (ex : CSPX, VWCE) réinvestissent leurs dividendes — non comptabilisés ici.</p>
                               </div>
                               <div className="w-2 h-2 bg-[#1B3050] dark:bg-[#0F1E2C] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
                             </div>
                           </div>
                         </div>
                       </div>
-                      <p className="text-xl font-bold font-mono text-[#2B6B5A]">+{chf(divCumul)}</p>
-                      <p className="text-sm font-mono text-[#5C6880]">{divYield.toFixed(2)} % rendement / an</p>
+                      <p className={`text-xl font-bold font-mono ${total >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>{total >= 0 ? '+' : ''}{chf(total)}</p>
+                      <div className="mt-1.5 space-y-0.5">
+                        {realizedGain !== 0 && (
+                          <p className="text-xs font-mono text-[#9E9A93]">
+                            Clos/réduit : <span className={realizedGain >= 0 ? 'text-[#2B6B5A]' : 'text-red-400'}>{realizedGain >= 0 ? '+' : ''}{chf(realizedGain)}</span>
+                          </p>
+                        )}
+                        {divCumul > 0 && (
+                          <p className="text-xs font-mono text-[#9E9A93]">
+                            Dividendes : <span className="text-[#2B6B5A]">+{chf(divCumul)}</span>
+                            {divYield > 0 && <span className="text-[#9E9A93]"> · {divYield.toFixed(2)} % / an</span>}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   )
                 })()}
