@@ -3180,7 +3180,8 @@ export default function PortfolioPage() {
       const gCout  = group.reduce((s, p) => s + (p.quantite > 0 ? p.coutCHF : -p.coutCHF), 0)
       coutTotal   += gCout
       // Impact FX sur position nette : taux moyen pondéré à l'achat = gCout / gCoutDevise
-      const gCoutDevise = group.reduce((s, p) => s + (p.quantite > 0 ? p.quantite * p.prixAchat : Math.abs(p.quantite) * p.prixAchat), 0)
+      // Coût en devise = coût net de la position ouverte (longs FIFO nets)
+      const gCoutDevise = longsGroup.reduce((s, p) => s + p.quantite * p.prixAchat, 0) - group.filter(q => q.quantite < 0 && q.prixVente != null).reduce((s, q) => s + Math.abs(q.quantite) * q.prixAchat, 0)
       const gWgtBuyRate = priceRef.devise !== 'CHF' && gCoutDevise > 0 ? gCout / gCoutDevise : first.tauxAchatCHF
       fxTotal      += priceRef.devise === 'CHF' ? 0 : gQteNet * priceRef.prixActuel * (priceRef.tauxActuelCHF - gWgtBuyRate)
       // Gain réel = gain CHF net − inflation sur coût net (depuis premier achat)
@@ -3371,17 +3372,33 @@ export default function PortfolioPage() {
         await supabase.from('portfolio_positions').delete().eq('id', id).eq('user_id', userId)
       }
     } else {
-      // Fermer à la date choisie — capturer le prix et le taux historique
-      const closed: Position = {
-        ...deleteTarget,
-        dateVente: deleteCloseDate,
-        prixVente: deleteHistoPrice?.price ?? deleteTarget.prixActuel,
-        tauxVenteCHF: deleteHistoPrice?.fxRate ?? deleteTarget.tauxActuelCHF,
+      // Clôturer = créer un lot de réduction pour la quantité nette FIFO restante du ticker
+      // (même comportement qu'une réduction manuelle au maximum)
+      const tickerUp = deleteTarget.ticker.toUpperCase()
+      const tickerLots = positions.filter(p => p.ticker.toUpperCase() === tickerUp && !p.dateVente)
+      const longsSort = tickerLots.filter(p => p.quantite > 0).sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
+      let alreadySold = tickerLots.filter(p => p.quantite < 0 && p.prixVente != null).reduce((s, p) => s + Math.abs(p.quantite), 0)
+      let netFifoQty = 0
+      for (const l of longsSort) {
+        const consumed = Math.min(l.quantite, alreadySold)
+        alreadySold = Math.max(0, alreadySold - consumed)
+        netFifoQty += l.quantite - consumed
       }
-      setPositions(ps => ps.map(p => p.id === id ? closed : p))
-      if (userId) {
-        const supabase = createClient()
-        await upsertPositionDB(supabase, closed)
+      if (netFifoQty > 0) {
+        const reductionLot: Position = {
+          ...deleteTarget,
+          id: crypto.randomUUID(),
+          quantite: -netFifoQty,
+          dateAchat: deleteCloseDate,
+          dateVente: undefined,
+          prixVente: deleteHistoPrice?.price ?? deleteTarget.prixActuel,
+          tauxVenteCHF: deleteHistoPrice?.fxRate ?? deleteTarget.tauxActuelCHF,
+        }
+        setPositions(ps => [...ps, reductionLot])
+        if (userId) {
+          const supabase = createClient()
+          await upsertPositionDB(supabase, reductionLot)
+        }
       }
     }
     setDeleteTarget(null)
@@ -3876,7 +3893,7 @@ export default function PortfolioPage() {
                               const _longs = [...group].filter(q => q.quantite > 0).sort((a,b) => new Date(a.dateAchat).getTime()-new Date(b.dateAchat).getTime())
                               let _sold = group.filter(q => q.quantite < 0 && q.prixVente != null).reduce((s,q)=>s+Math.abs(q.quantite),0)
                               for (const _l of _longs){const _r=Math.min(_l.quantite,_sold);_fifo.set(_l.id,_l.quantite-_r);_sold=Math.max(0,_sold-_r)}
-                              return group.filter(p => p.quantite > 0).map(p => {
+                              return group.filter(p => p.quantite > 0 && (_fifo.get(p.id) ?? p.quantite) > 0).map(p => {
                                 const _dQty    = p.quantite > 0 ? (_fifo.get(p.id) ?? p.quantite) : p.quantite
                                 const _dVal    = p.quantite > 0 ? _dQty * p.prixActuel * p.tauxActuelCHF : p.valeurCHF
                                 const _dCout   = p.quantite > 0 ? _dQty * p.prixAchat * p.tauxAchatCHF : p.coutCHF
@@ -3957,6 +3974,12 @@ export default function PortfolioPage() {
                         const toggle = () => setExpandedTickers(s => { const n = new Set(s); n.has(ticker) ? n.delete(ticker) : n.add(ticker); return n })
                         // Métriques basées sur positions ouvertes uniquement (FIFO net)
                         const longsA      = group.filter(p => p.quantite > 0)
+                        // FIFO : calculer les quantités résiduelles par lot
+                        const _fifoA: Map<string, number> = new Map()
+                        const _longsSort = [...longsA].sort((a,b) => new Date(a.dateAchat).getTime()-new Date(b.dateAchat).getTime())
+                        let _soldA = group.filter(q => q.quantite < 0 && q.prixVente != null).reduce((s,q)=>s+Math.abs(q.quantite),0)
+                        for (const _l of _longsSort){const _r=Math.min(_l.quantite,_soldA);_fifoA.set(_l.id,_l.quantite-_r);_soldA=Math.max(0,_soldA-_r)}
+                        const longsAActive = longsA.filter(p => (_fifoA.get(p.id) ?? p.quantite) > 0)
                         // Référence de prix = lot le plus récemment rafraîchi (même actif = même prix courant)
                         const priceRef    = longsA.reduce(
                           (best, p) => ((p.derniereMaj ?? '') >= (best.derniereMaj ?? '') ? p : best),
@@ -3969,7 +3992,8 @@ export default function PortfolioPage() {
                         const gCout       = group.reduce((s, p) => s + (p.quantite > 0 ? p.coutCHF : -p.coutCHF), 0)
                         const gGainCHF    = gVal - gCout
                         // Gain en devise et FX sur la position nette ouverte uniquement
-                        const gCoutDevise = group.reduce((s, p) => s + (p.quantite > 0 ? p.quantite * p.prixAchat : Math.abs(p.quantite) * p.prixAchat), 0)
+                        // Coût en devise basé sur les quantités FIFO restantes (évite le double-comptage des lots de réduction)
+                        const gCoutDevise = longsAActive.reduce((s, p) => s + (_fifoA.get(p.id) ?? p.quantite) * p.prixAchat, 0)
                         const gGainDevise = gQteNetA * priceRef.prixActuel - gCoutDevise
                         // Impact FX : taux moyen pondéré à l'achat = gCout / gCoutDevise
                         const gWgtBuyRate = first.devise !== 'CHF' && gCoutDevise > 0 ? gCout / gCoutDevise : first.tauxAchatCHF
@@ -3988,14 +4012,14 @@ export default function PortfolioPage() {
                             <tr className={`hover:bg-[#F5F3EF]/50 dark:hover:bg-[#1B2D3E]/50 transition-colors ${isExpanded ? 'bg-[#F5F3EF]/30 dark:bg-[#1B2D3E]/30' : ''}`}>
                               <td className="px-4 py-3">
                                 <div className="flex items-center gap-1.5">
-                                  {longsA.length > 1 && (
+                                  {longsAActive.length > 1 && (
                                     <button onClick={toggle} className="text-[#5C6880] hover:text-[#1B3050] dark:hover:text-white text-xs flex-shrink-0 w-4">
                                       {isExpanded ? '▾' : '▸'}
                                     </button>
                                   )}
                                   <div>
                                     <div className="font-medium">{first.nom}</div>
-                                    <div className="text-xs text-[#9E9A93]">{first.ticker}{longsA.length > 1 ? ` · ${longsA.length} lots` : ` · ${fmtDate(first.dateAchat)}`}</div>
+                                    <div className="text-xs text-[#9E9A93]">{first.ticker}{longsAActive.length > 1 ? ` · ${longsAActive.length} lots` : ` · ${fmtDate(first.dateAchat)}`}</div>
                                   </div>
                                 </div>
                               </td>
@@ -4023,7 +4047,7 @@ export default function PortfolioPage() {
                                 ) : <span className="text-[#9E9A93]">—</span>}
                               </td>
                             </tr>
-                            {longsA.length > 1 && isExpanded && longsA.map(p => {
+                            {longsAActive.length > 1 && isExpanded && longsAActive.map(p => {
                               const pDivCHF = tickerEntry ? p.quantite * tickerEntry.dividendTTM * p.tauxActuelCHF : 0
                               const pDivYld = p.valeurCHF > 0 && pDivCHF > 0 ? (pDivCHF / p.valeurCHF) * 100 : 0
                               return (
