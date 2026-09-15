@@ -3228,7 +3228,7 @@ export default function PortfolioPage() {
     const grp = groupedPositions[p.ticker.toUpperCase()]
     const groupTotal = grp ? grp.reduce((s, pc) => s + pc.quantite, 0) : p.quantite
     setEditId(p.id); setForm({ ...p }); setQuantiteRaw(String(p.quantite)); setFetchModalError(null); setManuel(true)
-    setSliceMode(false); setSliceDate(''); setSliceQuantiteRaw(String(groupTotal)); setSliceQuantite(groupTotal)
+    setSliceMode(false); setSliceDate(p.dateAchat); setSliceQuantiteRaw(String(groupTotal)); setSliceQuantite(groupTotal)
     setSliceGroupTotal(groupTotal)
     setSlicePrixVenteRaw(''); setSlicePrixVente(undefined); setSliceHistoPrice(null); setShowModal(true)
   }
@@ -4600,17 +4600,19 @@ export default function PortfolioPage() {
                           : "Une entrée de réduction sera ajoutée pour que le total du groupe reflète la nouvelle quantité. L'entrée originale reste inchangée."
                         }
                       </p>
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-2 gap-3 items-start">
                         <div>
                           <label className="block text-xs font-medium text-[#5C6880] mb-1">Date du changement</label>
                           <input className={inputCls} type="date" value={sliceDate}
+                            min={form.dateAchat}
                             onChange={e => setSliceDate(e.target.value)} />
+                          {form.dateAchat && (
+                            <p className="text-xs mt-1 text-[#9E9A93]">≥ date d'ouverture ({form.dateAchat})</p>
+                          )}
                         </div>
                         <div>
-                          <label className="block text-xs font-medium text-[#5C6880] mb-1">
-                            Nouvelle quantité totale
-                            <span className="ml-1 text-[#9E9A93] font-normal">(total groupe : {sliceGroupTotal})</span>
-                          </label>
+                          <label className="block text-xs font-medium text-[#5C6880] mb-1">Nouvelle quantité totale</label>
+                          <p className="text-xs text-[#9E9A93] mb-1">Total groupe actuel : {sliceGroupTotal}</p>
                           <input
                             className={inputCls}
                             type="text"
