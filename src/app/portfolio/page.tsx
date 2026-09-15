@@ -4029,8 +4029,17 @@ export default function PortfolioPage() {
                               </td>
                             </tr>
                             {longsAActive.length > 1 && isExpanded && longsAActive.map(p => {
-                              const pDivCHF = tickerEntry ? p.quantite * tickerEntry.dividendTTM * p.tauxActuelCHF : 0
-                              const pDivYld = p.valeurCHF > 0 && pDivCHF > 0 ? (pDivCHF / p.valeurCHF) * 100 : 0
+                              // Quantité FIFO résiduelle pour ce lot (peut être < p.quantite si une partie a été vendue)
+                              const qFifo = _fifoA.get(p.id) ?? p.quantite
+                              // Ratio pour mettre à l'échelle les montants absolus (les % restent identiques)
+                              const scale = p.quantite > 0 ? qFifo / p.quantite : 1
+                              const pGainDevise = p.gainDevise * scale
+                              const pGainCHF    = p.gainCHF    * scale
+                              const pImpactFX   = p.impactFX   * scale
+                              const pGainReel   = p.gainReel   * scale
+                              const pValCHF     = p.valeurCHF  * scale
+                              const pDivCHF = tickerEntry ? qFifo * tickerEntry.dividendTTM * p.tauxActuelCHF : 0
+                              const pDivYld = pValCHF > 0 && pDivCHF > 0 ? (pDivCHF / pValCHF) * 100 : 0
                               return (
                                 <tr key={p.id} className="bg-[#F5F3EF]/60 dark:bg-[#1B2D3E]/60 text-[#5C6880] dark:text-[#7B8DA6]">
                                   <td className="px-4 py-2 pl-9">
@@ -4039,18 +4048,18 @@ export default function PortfolioPage() {
                                   </td>
                                   <td className={`px-4 py-2 font-mono text-xs ${clr(p.gainPctDevise)}`}>
                                     <div>{pct(p.gainPctDevise)}</div>
-                                    <div className="text-xs text-[#9E9A93]">{p.gainDevise >= 0 ? '+' : ''}{p.gainDevise.toFixed(2)} {p.devise}</div>
+                                    <div className="text-xs text-[#9E9A93]">{pGainDevise >= 0 ? '+' : ''}{pGainDevise.toFixed(2)} {p.devise}</div>
                                   </td>
                                   <td className={`px-4 py-2 font-mono text-xs ${clr(p.gainPctCHF)}`}>
                                     <div>{pct(p.gainPctCHF)}</div>
-                                    <div className="text-xs text-[#9E9A93]">{p.gainCHF >= 0 ? '+' : ''}{chf(p.gainCHF)}</div>
+                                    <div className="text-xs text-[#9E9A93]">{pGainCHF >= 0 ? '+' : ''}{chf(pGainCHF)}</div>
                                   </td>
-                                  <td className={`px-4 py-2 font-mono text-xs ${clr(p.impactFX)}`}>
-                                    {p.devise === 'CHF' ? <span className="text-[#9E9A93]">—</span> : <>{p.impactFX >= 0 ? '+' : ''}{chf(p.impactFX)}</>}
+                                  <td className={`px-4 py-2 font-mono text-xs ${clr(pImpactFX)}`}>
+                                    {p.devise === 'CHF' ? <span className="text-[#9E9A93]">—</span> : <>{pImpactFX >= 0 ? '+' : ''}{chf(pImpactFX)}</>}
                                   </td>
                                   <td className={`px-4 py-2 font-mono text-xs font-semibold ${clr(p.gainPctReel)}`}>
                                     <div>{pct(p.gainPctReel)}</div>
-                                    <div className="text-xs text-[#9E9A93]">{p.gainReel >= 0 ? '+' : ''}{chf(p.gainReel)}</div>
+                                    <div className="text-xs text-[#9E9A93]">{pGainReel >= 0 ? '+' : ''}{chf(pGainReel)}</div>
                                   </td>
                                   <td className="px-4 py-2 font-mono text-xs">
                                     {pDivCHF > 0 ? (
