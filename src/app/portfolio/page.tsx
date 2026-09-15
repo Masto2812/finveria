@@ -768,21 +768,26 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
   )
 
   const lastVal = points[points.length - 1].value
-  const allValues = points.flatMap(p => [...(showInvesti ? [p.cost] : []), ...(showValeur ? [p.value] : []), ...(showHorsFX ? [p.valueNoFX] : [])]).filter(v => isFinite(v))
-  const allValuesFallback = allValues.length ? allValues : points.flatMap(p => [p.value])
-  const _max = Math.max(...allValuesFallback), _min = Math.min(...allValuesFallback)
-  const rawSpan = (_max - _min) || _max * 0.1 || 1
-  const rawStep = rawSpan / 4
-  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)))
-  const norm = rawStep / mag
-  const niceStep = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag
-  const minV = range !== 'all' ? Math.floor(_min / niceStep) * niceStep : Math.min(0, Math.floor(_min / niceStep) * niceStep)
-  const maxV = Math.ceil(_max / niceStep) * niceStep
-  const span = maxV - minV || 1
   const zE = zoomWEvol
+  const isZoomedEvol = zE[0] > 0.001 || zE[1] < 0.999
+  const visPtsE = points.filter(p => p.x >= zE[0] - 0.001 && p.x <= zE[1] + 0.001)
+  const firstVisE = visPtsE[0] ?? points[0]
+  const lastVisE = visPtsE[visPtsE.length - 1] ?? points[points.length - 1]
+  const scalePtsE = isZoomedEvol && visPtsE.length > 1 ? visPtsE : points
+  const allValuesVis = scalePtsE.flatMap(p => [...(showInvesti ? [p.cost] : []), ...(showValeur ? [p.value] : []), ...(showHorsFX ? [p.valueNoFX] : [])]).filter(v => isFinite(v))
+  const allValuesFallbackVis = allValuesVis.length ? allValuesVis : scalePtsE.flatMap(p => [p.value])
+  const _maxVis = Math.max(...allValuesFallbackVis), _minVis = Math.min(...allValuesFallbackVis)
+  const rawSpanVis = (_maxVis - _minVis) || _maxVis * 0.1 || 1
+  const rawStepVis = rawSpanVis / 4
+  const magVis = Math.pow(10, Math.floor(Math.log10(rawStepVis)))
+  const normVis = rawStepVis / magVis
+  const niceStepVis = (normVis < 1.5 ? 1 : normVis < 3 ? 2 : normVis < 7 ? 5 : 10) * magVis
+  const minVVis = range !== 'all' ? Math.floor(_minVis / niceStepVis) * niceStepVis : Math.min(0, Math.floor(_minVis / niceStepVis) * niceStepVis)
+  const maxVVis = Math.ceil(_maxVis / niceStepVis) * niceStepVis
+  const spanVis = maxVVis - minVVis || 1
   const px = (t: number) => PAD.l + ((t - zE[0]) / (zE[1] - zE[0])) * iW
-  const py = (v: number) => PAD.t + iH - ((v - minV) / span) * iH
-  const tickVals = Array.from({ length: Math.round((maxV - minV) / niceStep) + 1 }, (_, i) => minV + i * niceStep)
+  const py = (v: number) => PAD.t + iH - ((v - minVVis) / spanVis) * iH
+  const tickVals = Array.from({ length: Math.round((maxVVis - minVVis) / niceStepVis) + 1 }, (_, i) => minVVis + i * niceStepVis)
   const costPath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${px(p.x)} ${py(p.cost)}`).join(' ')
 
   const { gainD, lossD } = buildColoredAreas(
@@ -791,10 +796,6 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
   )
 
   const hovered = hoverIdx !== null ? points[hoverIdx] : null
-  const isZoomedEvol = zE[0] > 0.001 || zE[1] < 0.999
-  const visPtsE = points.filter(p => p.x >= zE[0] - 0.001 && p.x <= zE[1] + 0.001)
-  const firstVisE = visPtsE[0] ?? points[0]
-  const lastVisE = visPtsE[visPtsE.length - 1] ?? points[points.length - 1]
 
   return (
     <>
@@ -1119,35 +1120,34 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
     </div>
   )
 
-  const allVals = points.flatMap(p => {
+  const zP = zoomWPnl
+  const isZoomedPnl = zP[0] > 0.001 || zP[1] < 0.999
+  const visPtsP = points.filter(p => p.x >= zP[0] - 0.001 && p.x <= zP[1] + 0.001)
+  const firstVisP = visPtsP[0] ?? points[0]
+  const scalePtsP = isZoomedPnl && visPtsP.length > 1 ? visPtsP : points
+  const allValsVis = scalePtsP.flatMap(p => {
     const arr: number[] = []
     if (showNominal) arr.push(p.nominal)
     if (showReel) arr.push(p.reel)
-    if (showDividendes) arr.push(p.dividendes)
     return arr
   })
-  const allValsFallback = allVals.length ? allVals : points.flatMap(p => [p.nominal])
-  const _maxRaw = Math.max(...allValsFallback, 0), _minRaw = Math.min(...allValsFallback, 0)
-  const rawSpanPnl = (_maxRaw - _minRaw) || Math.abs(_maxRaw) * 0.1 || 1
-  const rawStepPnl = rawSpanPnl / 4
-  const magPnl = Math.pow(10, Math.floor(Math.log10(rawStepPnl)))
-  const normPnl = rawStepPnl / magPnl
-  const niceStep = (normPnl < 1.5 ? 1 : normPnl < 3 ? 2 : normPnl < 7 ? 5 : 10) * magPnl
-  const minV = Math.floor(_minRaw / niceStep) * niceStep
-  const maxV = Math.ceil(_maxRaw / niceStep) * niceStep
-  const span = maxV - minV || 1
-  const zP = zoomWPnl
+  const allValsFallbackVis = allValsVis.length ? allValsVis : scalePtsP.flatMap(p => [p.nominal])
+  const _maxRawVis = Math.max(...allValsFallbackVis, 0), _minRawVis = Math.min(...allValsFallbackVis, 0)
+  const rawSpanPnlVis = (_maxRawVis - _minRawVis) || Math.abs(_maxRawVis) * 0.1 || 1
+  const rawStepPnlVis = rawSpanPnlVis / 4
+  const magPnlVis = Math.pow(10, Math.floor(Math.log10(rawStepPnlVis)))
+  const normPnlVis = rawStepPnlVis / magPnlVis
+  const niceStepVis = (normPnlVis < 1.5 ? 1 : normPnlVis < 3 ? 2 : normPnlVis < 7 ? 5 : 10) * magPnlVis
+  const minVVis = Math.floor(_minRawVis / niceStepVis) * niceStepVis
+  const maxVVis = Math.ceil(_maxRawVis / niceStepVis) * niceStepVis
+  const spanVis = maxVVis - minVVis || 1
   const px = (t: number) => PAD.l + ((t - zP[0]) / (zP[1] - zP[0])) * iW
-  const py = (v: number) => PAD.t + iH - ((v - minV) / span) * iH
-  const tickVals = Array.from({ length: Math.round((maxV - minV) / niceStep) + 1 }, (_, i) => minV + i * niceStep)
+  const py = (v: number) => PAD.t + iH - ((v - minVVis) / spanVis) * iH
+  const tickVals = Array.from({ length: Math.round((maxVVis - minVVis) / niceStepVis) + 1 }, (_, i) => minVVis + i * niceStepVis)
   const zeroY = py(0)
 
   const nomAreas = showNominal ? buildColoredAreas(points.map(p => ({ x: p.x, val: p.nominal, base: 0 })), px, py) : { gainD: '', lossD: '' }
   const reelAreas = showReel ? buildColoredAreas(points.map(p => ({ x: p.x, val: p.reel, base: 0 })), px, py) : { gainD: '', lossD: '' }
-
-  const isZoomedPnl = zP[0] > 0.001 || zP[1] < 0.999
-  const visPtsP = points.filter(p => p.x >= zP[0] - 0.001 && p.x <= zP[1] + 0.001)
-  const firstVisP = visPtsP[0] ?? points[0]
   const lastVisP = visPtsP[visPtsP.length - 1] ?? points[points.length - 1]
 
   return (
@@ -1433,9 +1433,14 @@ function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: Posi
   const points = ddPts
   if (!points || points.length < 2) return null
 
-  const minDD = Math.min(...points.map(p => p.dd), -0.01)
-  const maxV = 0, minV = minDD * 1.2, span = maxV - minV || 1
   const zD = zoomWDd
+  const isZoomedDd = zD[0] > 0.001 || zD[1] < 0.999
+  const visPtsD = points.filter(p => p.x >= zD[0] - 0.001 && p.x <= zD[1] + 0.001)
+  const firstVisD = visPtsD[0] ?? points[0]
+  const lastVisD = visPtsD[visPtsD.length - 1] ?? points[points.length - 1]
+  const scalePtsD = isZoomedDd && visPtsD.length > 1 ? visPtsD : points
+  const minDD = Math.min(...scalePtsD.map(p => p.dd), -0.01)
+  const maxV = 0, minV = minDD * 1.2, span = maxV - minV || 1
   const px = (t: number) => PAD.l + ((t - zD[0]) / (zD[1] - zD[0])) * iW
   const py = (v: number) => PAD.t + iH - ((v - minV) / span) * iH
   const zeroY = py(0)
@@ -1444,10 +1449,6 @@ function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: Posi
   const areaPath = [`M ${px(points[0].x)} ${zeroY}`, ...points.map(p => `L ${px(p.x)} ${py(p.dd)}`), `L ${px(points[points.length-1].x)} ${zeroY}`, 'Z'].join(' ')
   const maxDDPt = points.reduce((m, p) => p.dd < m.dd ? p : m, points[0])
   const hovered = hoverIdx !== null ? points[hoverIdx] : null
-  const isZoomedDd = zD[0] > 0.001 || zD[1] < 0.999
-  const visPtsD = points.filter(p => p.x >= zD[0] - 0.001 && p.x <= zD[1] + 0.001)
-  const firstVisD = visPtsD[0] ?? points[0]
-  const lastVisD = visPtsD[visPtsD.length - 1] ?? points[points.length - 1]
 
   return (
     <>
