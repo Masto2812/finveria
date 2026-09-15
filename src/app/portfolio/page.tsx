@@ -4612,7 +4612,6 @@ export default function PortfolioPage() {
                         </div>
                         <div>
                           <label className="block text-xs font-medium text-[#5C6880] mb-1">Nouvelle quantité totale</label>
-                          <p className="text-xs text-[#9E9A93] mb-1">Total groupe actuel : {sliceGroupTotal}</p>
                           <input
                             className={inputCls}
                             type="text"
@@ -4629,6 +4628,7 @@ export default function PortfolioPage() {
                               }
                             }}
                           />
+                          <p className="text-xs mt-1 text-[#9E9A93]">Total groupe actuel : {sliceGroupTotal}</p>
                           {sliceQuantite > 0 && sliceQuantite !== sliceGroupTotal && (
                             <p className="text-xs mt-1 text-[#2B6B5A]">
                               {sliceQuantite > sliceGroupTotal ? `Nouveau lot : +${sliceQuantite - sliceGroupTotal} ${form.ticker}` : `Réduction : ${sliceQuantite - sliceGroupTotal} ${form.ticker}`}
