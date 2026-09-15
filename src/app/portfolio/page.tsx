@@ -1314,11 +1314,7 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
         <svg width="20" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="5 3" /><line x1="10" y1="5" x2="20" y2="5" stroke="#DC2626" strokeWidth="1.5" strokeDasharray="5 3" /></svg>
         <span className="text-[#9E9A93]">Réel</span>
       </button>
-      <button type="button" onClick={() => setShowDividendes(v => !v)}
-        className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs transition-all ${showDividendes ? 'border-[#F59E0B] bg-[#F5F3EF] dark:bg-[#1B2D3E]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-40'}`}>
-        <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#F59E0B" strokeWidth="1.5" /></svg>
-        <span style={{ color: '#F59E0B' }}>Dividendes</span>
-      </button>
+
     </div>
     </>
   )
