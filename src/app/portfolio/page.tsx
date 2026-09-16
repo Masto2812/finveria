@@ -3610,7 +3610,7 @@ export default function PortfolioPage() {
                   <p className={`text-sm font-mono ${clr(totals.gainReelPct)}`}>{pct(totals.gainReelPct)}</p>
                 </div>
                 {(() => {
-                  const realizedGain = positions.reduce((s, p) => {
+                  const gainVente = positions.reduce((s, p) => {
                     if (p.quantite < 0 && p.prixVente !== undefined) {
                       const qty = Math.abs(p.quantite)
                       return s + qty * (p.prixVente ?? 0) * (p.tauxVenteCHF ?? 1) - qty * p.prixAchat * p.tauxAchatCHF
@@ -3622,7 +3622,54 @@ export default function PortfolioPage() {
                     }
                     return s
                   }, 0)
+
+                  // Dividendes des positions clôturées (FIFO pour les réductions)
+                  type LongWithRemG = (typeof positionsCalc)[0] & { _remaining: number }
+                  const longsByTickerG = new Map<string, LongWithRemG[]>()
+                  positionsCalc
+                    .filter(p => p.quantite > 0 && !p.dateVente)
+                    .sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
+                    .forEach(p => {
+                      if (!longsByTickerG.has(p.ticker)) longsByTickerG.set(p.ticker, [])
+                      longsByTickerG.get(p.ticker)!.push({ ...p, _remaining: p.quantite })
+                    })
+                  let closedDivs = 0
+                  const sortedSalesG = positionsCalc
+                    .filter(p => p.quantite < 0 && p.prixVente !== undefined)
+                    .sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
+                  for (const sale of sortedSalesG) {
+                    let rem = Math.abs(sale.quantite)
+                    const longs = longsByTickerG.get(sale.ticker) ?? []
+                    const entry = tickerDivs[sale.ticker.toUpperCase()]
+                    for (const ll of longs) {
+                      if (rem <= 0) break
+                      if (ll._remaining <= 0) continue
+                      const consumed = Math.min(ll._remaining, rem)
+                      if (entry && ll.dateAchat) {
+                        const fromTs = new Date(ll.dateAchat).getTime() / 1000
+                        const toTs   = new Date(sale.dateAchat).getTime() / 1000
+                        closedDivs += entry.dividends
+                          .filter(d => d.ts >= fromTs && d.ts <= toTs)
+                          .reduce((s, d) => s + d.amount, 0) * consumed * (sale.tauxActuelCHF ?? 1)
+                      }
+                      ll._remaining -= consumed
+                      rem -= consumed
+                    }
+                  }
+                  for (const p of positionsCalc.filter(pp => pp.dateVente && pp.quantite > 0)) {
+                    const entry = tickerDivs[p.ticker.toUpperCase()]
+                    if (!entry) continue
+                    const fromTs = new Date(p.dateAchat).getTime() / 1000
+                    const toTs   = new Date(p.dateVente!).getTime() / 1000
+                    closedDivs += entry.dividends
+                      .filter(d => d.ts >= fromTs && d.ts <= toTs)
+                      .reduce((s, d) => s + d.amount, 0) * p.quantite * (p.tauxActuelCHF ?? 1)
+                  }
+                  const realizedGain = gainVente + closedDivs
+
+                  // Dividendes : uniquement positions ouvertes (quantite > 0, pas de dateVente)
                   const divCumul = positionsCalc.reduce((s, p) => {
+                    if (!(p.quantite > 0 && !p.dateVente)) return s
                     const entry = tickerDivs[p.ticker.toUpperCase()]
                     if (!entry) return s
                     const purchaseTs = new Date(p.dateAchat).getTime() / 1000
@@ -3630,12 +3677,13 @@ export default function PortfolioPage() {
                     return s + p.quantite * cumul * p.tauxActuelCHF
                   }, 0)
                   const divTTM = positionsCalc.reduce((s, p) => {
+                    if (!(p.quantite > 0 && !p.dateVente)) return s
                     const entry = tickerDivs[p.ticker.toUpperCase()]
                     return s + (entry ? p.quantite * entry.dividendTTM * p.tauxActuelCHF : 0)
                   }, 0)
                   const divYield = totals.valeurTotal > 0 ? (divTTM / totals.valeurTotal) * 100 : 0
                   const total = realizedGain + divCumul
-                  if (realizedGain === 0 && divCumul <= 0) return null
+                  if (gainVente === 0 && closedDivs === 0 && divCumul <= 0) return null
                   return (
                     <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
                       <div className="flex items-center gap-1.5 mb-1">
@@ -3647,8 +3695,8 @@ export default function PortfolioPage() {
                               <p className="font-semibold text-white/90">Gains réalisés + dividendes perçus</p>
                               <p className="text-white/70 leading-relaxed">Total des gains en cash effectivement encaissés : positions clôturées/réduites + dividendes versés depuis la date d&apos;achat, convertis en CHF.</p>
                               <div className="border-t border-white/20 pt-2 space-y-1">
-                                <p className="text-white/60 text-[11px]">· Gains clos/réductions : {realizedGain >= 0 ? '+' : ''}{chf(realizedGain)}</p>
-                                <p className="text-white/60 text-[11px]">· Dividendes perçus : +{chf(divCumul)}</p>
+                                <p className="text-white/60 text-[11px]">· Clos/réduit (gain + divid. clôt.) : {realizedGain >= 0 ? '+' : ''}{chf(realizedGain)}</p>
+                                <p className="text-white/60 text-[11px]">· Dividendes positions actives : {divCumul > 0 ? '+' : ''}{chf(divCumul)}</p>
                                 <p className="text-white/60 text-[11px] mt-1">⚠️ Les ETF capitalisants (ex : CSPX, VWCE) réinvestissent leurs dividendes — non comptabilisés ici.</p>
                               </div>
                               <div className="w-2 h-2 bg-[#1B3050] dark:bg-[#0F1E2C] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
