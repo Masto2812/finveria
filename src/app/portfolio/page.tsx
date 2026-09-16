@@ -4114,7 +4114,7 @@ export default function PortfolioPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-[#DDD9D1] dark:border-[#1e3347]">
-                        {['Position', 'Date opération', 'Qté vendue', 'Px achat', 'Taux achat', 'Px vente', 'Taux vente', 'Gain CHF', 'Perf.', ''].map(h => (
+                        {['Position', 'Date opération', 'Qté vendue', 'Px achat', 'Taux achat', 'Px vente', 'Taux vente', 'Gain CHF', 'Perf.', 'Dividendes', ''].map(h => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#5C6880] uppercase tracking-wider">{h}</th>
                         ))}
                       </tr>
@@ -4237,6 +4237,18 @@ export default function PortfolioPage() {
                                 <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainPct >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
                                   {pct(gainPct)}
                                 </td>
+                                <td className="px-4 py-3 font-mono text-xs">
+                                  {(() => {
+                                    const entry = tickerDivs[sale.ticker.toUpperCase()]
+                                    if (!entry || !dateDebut) return <span className="text-[#9E9A93]">—</span>
+                                    const fromTs = new Date(dateDebut).getTime() / 1000
+                                    const toTs   = new Date(dateOp).getTime() / 1000
+                                    const divAmt = entry.dividends.filter(d => d.ts >= fromTs && d.ts <= toTs).reduce((s, d) => s + d.amount, 0) * splitQty * (sale.tauxActuelCHF ?? 1)
+                                    return divAmt > 0
+                                      ? <span className="text-[#2B6B5A] font-semibold">+{chf(divAmt)}</span>
+                                      : <span className="text-[#9E9A93]">—</span>
+                                  })()}
+                                </td>
                                 <td className="px-4 py-3">
                                   <button
                                     onClick={async () => {
@@ -4306,6 +4318,18 @@ export default function PortfolioPage() {
                               </td>
                               <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainPct >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
                                 {pct(gainPct)}
+                              </td>
+                              <td className="px-4 py-3 font-mono text-xs">
+                                {(() => {
+                                  const entry = tickerDivs[p.ticker.toUpperCase()]
+                                  if (!entry) return <span className="text-[#9E9A93]">—</span>
+                                  const fromTs = new Date(p.dateAchat).getTime() / 1000
+                                  const toTs   = new Date(p.dateVente!).getTime() / 1000
+                                  const divAmt = entry.dividends.filter(d => d.ts >= fromTs && d.ts <= toTs).reduce((s, d) => s + d.amount, 0) * p.quantite * (p.tauxActuelCHF ?? 1)
+                                  return divAmt > 0
+                                    ? <span className="text-[#2B6B5A] font-semibold">+{chf(divAmt)}</span>
+                                    : <span className="text-[#9E9A93]">—</span>
+                                })()}
                               </td>
                               <td className="px-4 py-3">
                                 <button
