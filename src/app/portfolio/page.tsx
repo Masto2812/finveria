@@ -1132,7 +1132,8 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
     return arr
   })
   const allValsFallbackVis = allValsVis.length ? allValsVis : scalePtsP.flatMap(p => [p.nominal])
-  const _maxRawVis = Math.max(...allValsFallbackVis, 0), _minRawVis = Math.min(...allValsFallbackVis, 0)
+  const _maxRawVis = isZoomedPnl ? Math.max(...allValsFallbackVis) : Math.max(...allValsFallbackVis, 0)
+  const _minRawVis = isZoomedPnl ? Math.min(...allValsFallbackVis) : Math.min(...allValsFallbackVis, 0)
   const rawSpanPnlVis = (_maxRawVis - _minRawVis) || Math.abs(_maxRawVis) * 0.1 || 1
   const rawStepPnlVis = rawSpanPnlVis / 4
   const magPnlVis = Math.pow(10, Math.floor(Math.log10(rawStepPnlVis)))
