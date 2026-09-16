@@ -675,12 +675,12 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
       d = new Date(d.getFullYear(), d.getMonth() + 1, 1)
     }
     return { dates: list, firstDate: first, totalMs: ms || 1 }
-  }, [openData, range])
+  }, [data, range])
 
-  const dataKey = useMemo(() => openData.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + bustKey, [openData, range, bustKey])
+  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + bustKey, [data, range, bustKey])
 
   useEffect(() => {
-    if (openData.length === 0 || dates.length === 0) return
+    if (data.length === 0 || dates.length === 0) return
     let cancelled = false
     setLoading(true); setProgress(0); setMonthlyPts(null)
 
@@ -689,8 +689,8 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
       const result: { x: number; cost: number; value: number; valueNoFX: number; label: string }[] = []
 
       // ─── Bulk history (évite N×M appels /api/prices) ──────────────────────
-      const allTickers = [...new Set(openData.map(p => p.ticker.toUpperCase()))]
-      const fxPairs = [...new Set(openData.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
+      const allTickers = [...new Set(data.map(p => p.ticker.toUpperCase()))]
+      const fxPairs = [...new Set(data.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
       const isBust = bustKey > _bustLastSeen.current; _bustLastSeen.current = bustKey
       const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust) as Record<string, { dates: string[]; closes: number[] }>
       const lookupClose = makeLookupClose(histJson)
@@ -1016,7 +1016,7 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
   const _bustLastSeenPnL = useRef(0)
 
   useEffect(() => {
-    if (openData.length === 0 || dates.length === 0) return
+    if (data.length === 0 || dates.length === 0) return
     let cancelled = false
     setLoading(true); setProgress(0); setMonthlyPts(null)
 
@@ -1025,8 +1025,8 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
       const result: { x: number; nominal: number; reel: number; nominalNoFX: number; dividendes: number; label: string }[] = []
 
       // ─── Bulk history (évite N×M appels /api/prices) ──────────────────────
-      const allTickers = [...new Set(openData.map(p => p.ticker.toUpperCase()))]
-      const fxPairs = [...new Set(openData.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
+      const allTickers = [...new Set(data.map(p => p.ticker.toUpperCase()))]
+      const fxPairs = [...new Set(data.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
       const isBust = bustKey > _bustLastSeenPnL.current; _bustLastSeenPnL.current = bustKey
       const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust) as Record<string, { dates: string[]; closes: number[] }>
       const lookupClose = makeLookupClose(histJson)
