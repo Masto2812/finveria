@@ -3968,11 +3968,19 @@ export default function PortfolioPage() {
                         // Coût en devise basé sur les quantités FIFO restantes (évite le double-comptage des lots de réduction)
                         const gCoutDevise = longsAActive.reduce((s, p) => s + (_fifoA.get(p.id) ?? p.quantite) * p.prixAchat, 0)
                         const gGainDevise = gQteNetA * priceRef.prixActuel - gCoutDevise
-                        // Impact FX : taux moyen pondéré à l'achat = gCout / gCoutDevise
-                        const gWgtBuyRate = first.devise !== 'CHF' && gCoutDevise > 0 ? gCout / gCoutDevise : first.tauxAchatCHF
-                        const gImpactFX   = first.devise === 'CHF' ? 0 : gQteNetA * priceRef.prixActuel * (priceRef.tauxActuelCHF - gWgtBuyRate)
-                        // Gain réel = gain CHF − inflation sur coût net (depuis premier achat)
-                        const gGainReel   = gGainCHF - gCout * inflationCumulee(first.dateAchat)
+                        // Impact FX : somme des impacts par lot (chacun avec son propre taux d'achat)
+                        // → cohérent avec les sous-lignes, évite l'erreur du taux moyen pondéré par prix
+                        const gImpactFX   = first.devise === 'CHF' ? 0 : longsAActive.reduce((s, p) => {
+                          const qFifo = _fifoA.get(p.id) ?? p.quantite
+                          return s + p.impactFX * (qFifo / p.quantite)
+                        }, 0)
+                        // Gain réel = gain CHF − inflation par lot depuis sa propre date d'achat
+                        // → cohérent avec les sous-lignes, évite d'appliquer l'inflation 2015 au lot 2023
+                        const gGainReel   = gGainCHF - longsAActive.reduce((s, p) => {
+                          const qFifo = _fifoA.get(p.id) ?? p.quantite
+                          const scale = p.quantite > 0 ? qFifo / p.quantite : 1
+                          return s + p.coutCHF * scale * inflationCumulee(p.dateAchat)
+                        }, 0)
                         const gPerfCHF    = gCout > 0 ? (gGainCHF / gCout) * 100 : 0
                         const gPerfDevise = gCoutDevise > 0 ? (gGainDevise / gCoutDevise) * 100 : 0
                         const gPerfReel   = gCout > 0 ? (gGainReel / gCout) * 100 : 0
