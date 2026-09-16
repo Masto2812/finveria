@@ -627,7 +627,7 @@ function makeLookupClose(histJson: Record<string, { dates: string[]; closes: num
 }
 
 // ─── Chart: Evolution ─────────────────────────────────────────────────────────
-function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[]; showFX?: boolean; range?: 'all' | '60d' | 'weekly'; bustKey?: number }) {
+function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { data: PositionCalc[]; showFX?: boolean; range?: 'all' | '60d' | 'weekly'; dateFrom?: string; dateTo?: string; bustKey?: number }) {
   const W = 600, H = 180, PAD = { t: 16, r: 16, b: 36, l: 64 }
   const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
 
@@ -650,12 +650,15 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
     const today = new Date()
     if (range === '60d') {
       const list: string[] = []
-      for (let i = 59; i >= 0; i--) {
-        const d = new Date(today); d.setDate(d.getDate() - i)
-        list.push(d.toISOString().slice(0, 10))
+      if (dateFrom && dateTo) {
+        let d = new Date(dateFrom)
+        const end = new Date(dateTo)
+        while (d <= end) { list.push(d.toISOString().slice(0, 10)); d = new Date(d); d.setDate(d.getDate() + 1) }
+      } else {
+        for (let i = 59; i >= 0; i--) { const d = new Date(today); d.setDate(d.getDate() - i); list.push(d.toISOString().slice(0, 10)) }
       }
       const first = new Date(list[0])
-      return { dates: list, firstDate: first, totalMs: today.getTime() - first.getTime() || 1 }
+      return { dates: list, firstDate: first, totalMs: (new Date(list[list.length - 1]).getTime() - first.getTime()) || 1 }
     }
     const first = new Date(sorted[0].dateAchat)
     const ms = today.getTime() - first.getTime()
@@ -675,7 +678,7 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
       d = new Date(d.getFullYear(), d.getMonth() + 1, 1)
     }
     return { dates: list, firstDate: first, totalMs: ms || 1 }
-  }, [data, range])
+  }, [data, range, dateFrom, dateTo])
 
   const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + bustKey, [data, range, bustKey])
 
@@ -962,7 +965,7 @@ function inflationBetween(dateAchat: string, dateTo: string): number {
   return cpiAt(dateTo) / cpiAt(dateAchat) - 1
 }
 
-function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc[]; tickerDivs?: Record<string, { dividendTTM: number; dividends: { ts: number; amount: number }[] }>; range?: 'all' | '60d' | 'weekly'; bustKey?: number }) {
+function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { data: PositionCalc[]; tickerDivs?: Record<string, { dividendTTM: number; dividends: { ts: number; amount: number }[] }>; range?: 'all' | '60d' | 'weekly'; dateFrom?: string; dateTo?: string; bustKey?: number }) {
   const [showNominal, setShowNominal] = useState(true)
   const [showReel, setShowReel] = useState(false)
   const [showDividendes, setShowDividendes] = useState(false)
@@ -984,12 +987,15 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
     const today = new Date()
     if (range === '60d') {
       const list: string[] = []
-      for (let i = 59; i >= 0; i--) {
-        const d = new Date(today); d.setDate(d.getDate() - i)
-        list.push(d.toISOString().slice(0, 10))
+      if (dateFrom && dateTo) {
+        let d = new Date(dateFrom)
+        const end = new Date(dateTo)
+        while (d <= end) { list.push(d.toISOString().slice(0, 10)); d = new Date(d); d.setDate(d.getDate() + 1) }
+      } else {
+        for (let i = 59; i >= 0; i--) { const d = new Date(today); d.setDate(d.getDate() - i); list.push(d.toISOString().slice(0, 10)) }
       }
       const first = new Date(list[0])
-      return { dates: list, firstDate: first, totalMs: today.getTime() - first.getTime() || 1 }
+      return { dates: list, firstDate: first, totalMs: (new Date(list[list.length - 1]).getTime() - first.getTime()) || 1 }
     }
     const first = new Date(sorted[0].dateAchat)
     const ms = today.getTime() - first.getTime()
@@ -1012,7 +1018,7 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
   }, [data, range])
 
   const divKey = Object.keys(tickerDivs ?? {}).sort().join(',')
-  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + divKey + '|' + bustKey, [data, range, divKey, bustKey])
+  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + (dateFrom ?? '') + '|' + (dateTo ?? '') + '|' + divKey + '|' + bustKey, [data, range, dateFrom, dateTo, divKey, bustKey])
   const _bustLastSeenPnL = useRef(0)
 
   useEffect(() => {
@@ -1339,7 +1345,7 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
 
 
 // ─── Chart: Drawdown ─────────────────────────────────────────────────────────
-function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: PositionCalc[]; onMaxDrawdown?: (pct: number, date: string) => void; range?: 'all' | '60d' | 'weekly'; bustKey?: number }) {
+function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey = 0 }: { data: PositionCalc[]; onMaxDrawdown?: (pct: number, date: string) => void; range?: 'all' | '60d' | 'weekly'; dateFrom?: string; dateTo?: string; bustKey?: number }) {
   const W = 600, H = 180, PAD = { t: 16, r: 16, b: 36, l: 56 }
   const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
 
@@ -1357,12 +1363,15 @@ function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: Posi
     const today = new Date()
     if (range === '60d') {
       const list: string[] = []
-      for (let i = 59; i >= 0; i--) {
-        const d = new Date(today); d.setDate(d.getDate() - i)
-        list.push(d.toISOString().slice(0, 10))
+      if (dateFrom && dateTo) {
+        let d = new Date(dateFrom)
+        const end = new Date(dateTo)
+        while (d <= end) { list.push(d.toISOString().slice(0, 10)); d = new Date(d); d.setDate(d.getDate() + 1) }
+      } else {
+        for (let i = 59; i >= 0; i--) { const d = new Date(today); d.setDate(d.getDate() - i); list.push(d.toISOString().slice(0, 10)) }
       }
       const first = new Date(list[0])
-      return { dates: list, firstDate: first, totalMs: today.getTime() - first.getTime() || 1 }
+      return { dates: list, firstDate: first, totalMs: (new Date(list[list.length - 1]).getTime() - first.getTime()) || 1 }
     }
     const first = new Date(sorted[0].dateAchat)
     const ms = today.getTime() - first.getTime()
@@ -1379,9 +1388,9 @@ function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: Posi
     let d = new Date(first.getFullYear(), first.getMonth(), 1)
     while (d <= today) { list.push(d.toISOString().slice(0, 10)); d = new Date(d.getFullYear(), d.getMonth() + 1, 1) }
     return { dates: list, firstDate: first, totalMs: ms || 1 }
-  }, [data, range])
+  }, [data, range, dateFrom, dateTo])
 
-  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + bustKey, [data, range, bustKey])
+  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + (dateFrom ?? '') + '|' + (dateTo ?? '') + '|' + bustKey, [data, range, dateFrom, dateTo, bustKey])
   const _bustLastSeenDD = useRef(0)
 
   useEffect(() => {
@@ -2998,6 +3007,8 @@ export default function PortfolioPage() {
   const [activeTab, setActiveTab] = useState<'positions' | 'analyse' | 'cloturees'>('positions')
   const [chartMode, setChartMode] = useState<'evol' | 'pnl' | 'drawdown'>('evol')
   const [chartRange, setChartRange] = useState<'all' | '60d' | 'weekly'>('all')
+  const [chartDateFrom, setChartDateFrom] = useState('')
+  const [chartDateTo, setChartDateTo] = useState('')
   const [chartBustKey, setChartBustKey] = useState(0)
   const [maxDrawdown, setMaxDrawdown] = useState<{ pct: number; date: string } | null>(null)
   const [dailyMaxDrawdown, setDailyMaxDrawdown] = useState<{ pct: number; peakDate: string; date: string } | null>(null)
@@ -3929,7 +3940,7 @@ export default function PortfolioPage() {
                     <div className="flex items-center gap-2">
                       <div className="flex bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-0.5 gap-0.5 mr-1">
                         {(['all', 'weekly', '60d'] as const).map(r => (
-                          <button key={r} onClick={() => setChartRange(r)}
+                          <button key={r} onClick={() => { setChartRange(r); if (r !== '60d') { setChartDateFrom(''); setChartDateTo('') } }}
                             className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${chartRange === r ? 'bg-white dark:bg-[#162534] text-[#1B3050] dark:text-white shadow-sm' : 'text-[#9E9A93] hover:text-[#5C6880]'}`}>
                             {r === 'all' ? 'Mois' : r === 'weekly' ? 'Sem' : '60j'}
                           </button>
@@ -3949,9 +3960,38 @@ export default function PortfolioPage() {
                       </button>
                     </div>
                   </div>
-                  {chartMode === 'evol' && <EvolChart data={positionsCalc} showFX={true} range={chartRange} bustKey={chartBustKey} />}
-                  {chartMode === 'pnl' && <PnLChart data={positionsCalc} tickerDivs={tickerDivs} range={chartRange} bustKey={chartBustKey} />}
-                  {chartMode === 'drawdown' && <DrawdownChart data={positionsCalc} onMaxDrawdown={(pct, date) => setMaxDrawdown({ pct, date })} range={chartRange} bustKey={chartBustKey} />}
+                  {chartRange === '60d' && (
+                    <div className="flex items-center gap-2 mt-2 flex-wrap">
+                      <span className="text-xs text-[#9E9A93]">Du</span>
+                      <input type="date" value={chartDateFrom}
+                        onChange={e => {
+                          const f = e.target.value; setChartDateFrom(f)
+                          if (chartDateTo && f && (new Date(chartDateTo).getTime() - new Date(f).getTime()) / 86400000 > 60) {
+                            const cap = new Date(f); cap.setDate(cap.getDate() + 60); setChartDateTo(cap.toISOString().slice(0, 10))
+                          }
+                        }}
+                        className="text-xs bg-[#F5F3EF] dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-md px-2 py-0.5 text-[#1B3050] dark:text-[#E8E4DC] focus:outline-none focus:ring-1 focus:ring-[#2B6B5A]" />
+                      <span className="text-xs text-[#9E9A93]">au</span>
+                      <input type="date" value={chartDateTo}
+                        min={chartDateFrom || undefined}
+                        onChange={e => {
+                          const t = e.target.value
+                          if (chartDateFrom && (new Date(t).getTime() - new Date(chartDateFrom).getTime()) / 86400000 > 60) return
+                          setChartDateTo(t)
+                        }}
+                        className="text-xs bg-[#F5F3EF] dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-md px-2 py-0.5 text-[#1B3050] dark:text-[#E8E4DC] focus:outline-none focus:ring-1 focus:ring-[#2B6B5A]" />
+                      {chartDateFrom && chartDateTo && (
+                        <span className="text-xs text-[#9E9A93]">({Math.ceil((new Date(chartDateTo).getTime() - new Date(chartDateFrom).getTime()) / 86400000) + 1}j)</span>
+                      )}
+                      {(chartDateFrom || chartDateTo) && (
+                        <button onClick={() => { setChartDateFrom(''); setChartDateTo('') }}
+                          className="text-xs text-[#9E9A93] hover:text-[#5C6880] underline">réinitialiser</button>
+                      )}
+                    </div>
+                  )}
+                  {chartMode === 'evol' && <EvolChart data={positionsCalc} showFX={true} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
+                  {chartMode === 'pnl' && <PnLChart data={positionsCalc} tickerDivs={tickerDivs} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
+                  {chartMode === 'drawdown' && <DrawdownChart data={positionsCalc} onMaxDrawdown={(pct, date) => setMaxDrawdown({ pct, date })} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
                   <p className="text-xs text-[#9E9A93] mt-2">
                     {chartMode === 'evol' ? (chartRange === '60d' ? 'Valeur journalière du portefeuille sur les 60 derniers jours.' : chartRange === 'weekly' ? 'Valeur hebdomadaire du portefeuille depuis le premier achat.' : 'Valeur mensuelle réelle du portefeuille depuis le premier achat.') : chartMode === 'pnl' ? (chartRange === '60d' ? 'Gain journalier cumulé (variation de prix + gains réalisés dont dividendes) sur les 60 derniers jours.' : chartRange === 'weekly' ? 'Gain hebdomadaire cumulé (variation de prix + gains réalisés dont dividendes) depuis le premier achat.' : 'Gain mensuel cumulé (variation de prix + gains réalisés dont dividendes) basé sur les prix historiques réels. Nominal = en CHF courant · Réel = ajusté inflation.') : (chartRange === '60d' ? 'Drawdown journalier sur les 60 derniers jours.' : chartRange === 'weekly' ? 'Drawdown hebdomadaire depuis le premier achat.' : 'Recul maximal par rapport au pic de valeur du portefeuille.')}
                   </p>
