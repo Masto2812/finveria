@@ -4358,6 +4358,8 @@ export default function PortfolioPage() {
                         const closedRows = positions.filter(p => p.dateVente && p.quantite > 0)
                         const allRows = [...deltaRows, ...closedRows]
                         if (allRows.length === 0) return null
+
+                        // ── Gain total ────────────────────────────────────────────────────
                         const totalGain = allRows.reduce((s, p) => {
                           const isDelta = p.quantite < 0
                           const qteVendue = Math.abs(p.quantite)
@@ -4367,14 +4369,64 @@ export default function PortfolioPage() {
                           const venteCHF = qteVendue * pxVente * txVente
                           return s + (venteCHF - coutCHF)
                         }, 0)
+
+                        // ── Dividendes des positions clôturées ────────────────────────────
+                        // Re-run FIFO split to compute per-lot dateDebut for delta rows
+                        type LongWithRem2 = (typeof positions)[0] & { _remaining: number }
+                        const longsByTicker2 = new Map<string, LongWithRem2[]>()
+                        positions
+                          .filter(p => p.quantite > 0 && !p.dateVente)
+                          .sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
+                          .forEach(p => {
+                            if (!longsByTicker2.has(p.ticker)) longsByTicker2.set(p.ticker, [])
+                            longsByTicker2.get(p.ticker)!.push({ ...p, _remaining: p.quantite })
+                          })
+                        let totalDivs = 0
+                        // splitRows (delta lots) — FIFO to get dateDebut per consumed qty
+                        const sortedSales = [...deltaRows].sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
+                        for (const sale of sortedSales) {
+                          let rem = Math.abs(sale.quantite)
+                          const longs = longsByTicker2.get(sale.ticker) ?? []
+                          const entry = tickerDivs[sale.ticker.toUpperCase()]
+                          for (const ll of longs) {
+                            if (rem <= 0) break
+                            if (ll._remaining <= 0) continue
+                            const consumed = Math.min(ll._remaining, rem)
+                            if (entry && ll.dateAchat) {
+                              const fromTs = new Date(ll.dateAchat).getTime() / 1000
+                              const toTs   = new Date(sale.dateAchat).getTime() / 1000
+                              totalDivs += entry.dividends
+                                .filter(d => d.ts >= fromTs && d.ts <= toTs)
+                                .reduce((s, d) => s + d.amount, 0) * consumed * (sale.tauxActuelCHF ?? 1)
+                            }
+                            ll._remaining -= consumed
+                            rem -= consumed
+                          }
+                        }
+                        // closedRows (dateVente positions)
+                        for (const p of closedRows) {
+                          const entry = tickerDivs[p.ticker.toUpperCase()]
+                          if (!entry) continue
+                          const fromTs = new Date(p.dateAchat).getTime() / 1000
+                          const toTs   = new Date(p.dateVente!).getTime() / 1000
+                          totalDivs += entry.dividends
+                            .filter(d => d.ts >= fromTs && d.ts <= toTs)
+                            .reduce((s, d) => s + d.amount, 0) * p.quantite * (p.tauxActuelCHF ?? 1)
+                        }
+
                         return (
                           <tr className="border-t-2 border-[#DDD9D1] dark:border-[#2a3f52] bg-[#F9F8F5] dark:bg-[#1a2d3d]">
-                            <td colSpan={8} className="px-4 py-3 text-xs font-semibold text-[#5C6880] uppercase tracking-wider">
+                            <td colSpan={7} className="px-4 py-3 text-xs font-semibold text-[#5C6880] uppercase tracking-wider">
                               Total réalisé
                             </td>
-                            <td colSpan={3} className={`px-4 py-3 font-mono text-sm font-bold ${totalGain >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
+                            <td className={`px-4 py-3 font-mono text-sm font-bold ${totalGain >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
                               {(totalGain >= 0 ? '+' : '') + chf(totalGain)}
                             </td>
+                            <td className="px-4 py-3" />
+                            <td className={`px-4 py-3 font-mono text-sm font-bold ${totalDivs > 0 ? 'text-[#2B6B5A]' : 'text-[#9E9A93]'}`}>
+                              {totalDivs > 0 ? '+' + chf(totalDivs) : '\u2014'}
+                            </td>
+                            <td className="px-4 py-3" />
                           </tr>
                         )
                       })()}
