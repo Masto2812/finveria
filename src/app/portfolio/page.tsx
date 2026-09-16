@@ -1438,6 +1438,77 @@ function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey =
       // Delta lots pour calcul des quantités nettes par ticker
       const allDeltaLots = data.filter(p => p.quantite < 0 && p.prixVente != null)
 
+      // ─── Phase de préchauffage VLU ────────────────────────────────────────
+      // Si une dateFrom est fournie (plage personnalisée), on reconstitue
+      // l'état VLU (parts, pic) depuis le début de l'historique jusqu'à
+      // dateFrom exclusif. Ainsi le graphique et la carte DRAWDOWN MAX
+      // sont cohérents (même base de calcul).
+      if (dateFrom) {
+        const minDateAchat = longLots.reduce((m, p) => p.dateAchat < m ? p.dateAchat : m, '9999-99-99')
+        const warmupDates: string[] = []
+        let wdCur = new Date(minDateAchat)
+        const wdEnd = new Date(dateFrom)
+        while (wdCur < wdEnd) {
+          warmupDates.push(wdCur.toISOString().slice(0, 10))
+          wdCur.setDate(wdCur.getDate() + 1)
+        }
+        for (const wDate of warmupDates) {
+          if (cancelled) return
+          const wActiveLong = longLots.filter(p =>
+            p.dateAchat <= wDate && (!p.dateVente || p.dateVente > wDate)
+          )
+          if (wActiveLong.length === 0) {
+            while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= wDate) cfIdx++
+            continue
+          }
+          const wAllHaveData = wActiveLong.every(p => lookupClose(p.ticker, wDate) !== null)
+          if (!wAllHaveData) continue
+          let netCf = 0
+          while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= wDate) {
+            const cf = cfEvents[cfIdx++]
+            netCf += cf.type === 'buy' ? cf.amount : -cf.amount
+          }
+          const uniqueW = [...new Set(wActiveLong.map(p => p.ticker.toUpperCase()))]
+          const wPriceMap = new Map<string, { price: number; fxRate: number }>()
+          for (const tk of uniqueW) {
+            const lot = wActiveLong.find(p => p.ticker.toUpperCase() === tk)!
+            const price = lookupClose(tk, wDate)!
+            const fxPair = lot.devise !== 'CHF' ? `${lot.devise}CHF=X` : null
+            const fxRate = fxPair ? (lookupClose(fxPair, wDate) ?? lot.tauxActuelCHF) : 1
+            wPriceMap.set(tk, { price, fxRate })
+          }
+          const wNetQty = new Map<string, number>()
+          for (const p of wActiveLong) {
+            const tk = p.ticker.toUpperCase()
+            wNetQty.set(tk, (wNetQty.get(tk) ?? 0) + p.quantite)
+          }
+          for (const p of allDeltaLots) {
+            if (p.dateAchat <= wDate) {
+              const tk = p.ticker.toUpperCase()
+              wNetQty.set(tk, (wNetQty.get(tk) ?? 0) + p.quantite)
+            }
+          }
+          let wPortfolioV = 0
+          for (const [tk, netQty] of wNetQty) {
+            if (netQty <= 0) continue
+            const pr = wPriceMap.get(tk)
+            if (!pr) continue
+            wPortfolioV += netQty * pr.price * pr.fxRate
+          }
+          if (wPortfolioV <= 0) { prevPortfolioV = 0; continue }
+          if (totalUnits === 0) {
+            totalUnits = INITIAL_UNITS
+          } else if (netCf !== 0) {
+            const prevUnitV = prevPortfolioV > 0 ? prevPortfolioV / totalUnits : wPortfolioV / INITIAL_UNITS
+            if (prevUnitV > 0) totalUnits += netCf / prevUnitV
+            if (totalUnits <= 0) totalUnits = INITIAL_UNITS
+          }
+          prevPortfolioV = wPortfolioV
+          const wUnitV = wPortfolioV / totalUnits
+          if (wUnitV > peakUnitV) peakUnitV = wUnitV
+        }
+      }
+
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
         const dateStr = dates[i]
