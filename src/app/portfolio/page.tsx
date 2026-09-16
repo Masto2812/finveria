@@ -63,8 +63,7 @@ async function fetchHistory(tickers: string, bust = false): Promise<Record<strin
   const url = `/api/history?tickers=${encodeURIComponent(tickers)}${bust ? '&bust=1' : ''}`
   const res = await fetch(url)
   const data = await res.json()
-  historyCache.set(tickers, data)
-  historyCache.delete(cacheKey)
+  historyCache.set(cacheKey, data)
   return data
 }
 
@@ -618,15 +617,9 @@ function makeLookupClose(histJson: Record<string, { dates: string[]; closes: num
   return function lookupClose(ticker: string, d: string): number | null {
     const h = histJson[ticker.toUpperCase()]
     if (!h || h.dates.length === 0) return null
-    const lastDate = h.dates[h.dates.length - 1]
-    // Autoriser le forward-fill jusqu'à ~6 mois au-delà de la dernière donnée connue.
-    // Cela évite que le graphique s'arrête brutalement quand le cache Supabase est
-    // légèrement périmé (données Yahoo manquantes pour quelques mois récents).
-    // Au-delà de 185 jours, on suppose que le ticker est suspendu / disparu.
-    const daysBeyond = Math.round(
-      (new Date(d + 'T12:00:00Z').getTime() - new Date(lastDate + 'T12:00:00Z').getTime()) / 86400000
-    )
-    if (daysBeyond > 185) return null
+    // Forward-fill illimité : si le ticker est dans histJson, on retourne toujours
+    // son dernier prix connu, même si les données sont périmées (Yahoo en échec).
+    // null seulement si : ticker absent de histJson, ou date demandée avant la première cotation.
     let lo = 0, hi = h.dates.length - 1, best = -1
     while (lo <= hi) { const mid = (lo + hi) >> 1; if (h.dates[mid] <= d) { best = mid; lo = mid + 1 } else hi = mid - 1 }
     return best >= 0 ? h.closes[best] : null
