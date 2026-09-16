@@ -619,7 +619,14 @@ function makeLookupClose(histJson: Record<string, { dates: string[]; closes: num
     const h = histJson[ticker.toUpperCase()]
     if (!h || h.dates.length === 0) return null
     const lastDate = h.dates[h.dates.length - 1]
-    if (d.slice(0, 7) > lastDate.slice(0, 7)) return null
+    // Autoriser le forward-fill jusqu'à ~6 mois au-delà de la dernière donnée connue.
+    // Cela évite que le graphique s'arrête brutalement quand le cache Supabase est
+    // légèrement périmé (données Yahoo manquantes pour quelques mois récents).
+    // Au-delà de 185 jours, on suppose que le ticker est suspendu / disparu.
+    const daysBeyond = Math.round(
+      (new Date(d + 'T12:00:00Z').getTime() - new Date(lastDate + 'T12:00:00Z').getTime()) / 86400000
+    )
+    if (daysBeyond > 185) return null
     let lo = 0, hi = h.dates.length - 1, best = -1
     while (lo <= hi) { const mid = (lo + hi) >> 1; if (h.dates[mid] <= d) { best = mid; lo = mid + 1 } else hi = mid - 1 }
     return best >= 0 ? h.closes[best] : null
