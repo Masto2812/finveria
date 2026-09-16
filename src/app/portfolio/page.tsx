@@ -1390,61 +1390,136 @@ function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: Posi
     setLoading(true)
     async function fetchAll() {
       const today = new Date().toISOString().slice(0, 10)
-      const values: { x: number; value: number; label: string }[] = []
 
-      // ─── Bulk history (inclut delta lots pour cohérence avec PnLChart) ────
-      const allTickers = [...new Set(data.map(p => p.ticker.toUpperCase()))]
-      const fxPairs = [...new Set(data.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
+      // ─── Bulk history (long lots uniquement pour VLU) ─────────────────────
+      const longLots = data.filter(p => p.quantite > 0)
+      const allTickers = [...new Set(longLots.map(p => p.ticker.toUpperCase()))]
+      const fxPairs = [...new Set(longLots.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
       const isBust = bustKey > _bustLastSeenDD.current; _bustLastSeenDD.current = bustKey
       const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust) as Record<string, { dates: string[]; closes: number[] }>
       const lookupClose = makeLookupClose(histJson)
+
+      // ─── Événements de flux de capital (triés par date) ──────────────────
+      // Achat = entrée de capital (nouvelle position longue)
+      // Vente = sortie de capital (clôture totale ou vente partielle)
+      type CfEvent = { date: string; type: 'buy' | 'sell'; amount: number }
+      const cfEvents: CfEvent[] = []
+      for (const p of data) {
+        if (p.quantite > 0) {
+          cfEvents.push({ date: p.dateAchat, type: 'buy', amount: p.coutCHF })
+          if (p.dateVente) cfEvents.push({ date: p.dateVente, type: 'sell', amount: p.valeurCHF })
+        } else if (p.quantite < 0 && p.prixVente != null) {
+          // delta lot : dateAchat = date de vente, valeurCHF = produit de cession
+          cfEvents.push({ date: p.dateAchat, type: 'sell', amount: p.valeurCHF })
+        }
+      }
+      cfEvents.sort((a, b) => a.date.localeCompare(b.date))
+      let cfIdx = 0
+
+      // ─── État VLU (Valeur Liquidative Unitaire) ───────────────────────────
+      // On suit des «parts» comme un fonds : quand du capital entre/sort, on
+      // crée/détruit des parts au prix unitaire du moment → le drawdown ne
+      // reflète que la performance marché, pas les mouvements de capital.
+      const INITIAL_UNITS = 10000
+      let totalUnits = 0          // nombre de parts en circulation
+      let prevPortfolioV = 0      // valeur du portefeuille à la date précédente traitée
+      let peakUnitV = -Infinity   // pic de la valeur liquidative unitaire
+      const result: { x: number; dd: number; label: string }[] = []
+
+      // Delta lots pour calcul des quantités nettes par ticker
+      const allDeltaLots = data.filter(p => p.quantite < 0 && p.prixVente != null)
 
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
         const dateStr = dates[i]
         const isToday = dateStr >= today
-        const active = data.filter(p => p.dateAchat <= dateStr)
-        if (active.length === 0) continue
 
-        // Pour les dates historiques, on exige des données réelles pour TOUS les actifs actifs.
-        // Utiliser p.prixActuel comme fallback introduirait de faux pics (prix actuel > prix historique)
-        // ce qui gonflerait artificiellement le drawdown calculé depuis ce faux sommet.
-        if (!isToday) {
-          const allHaveData = active.every(p => lookupClose(p.ticker, dateStr) !== null)
-          if (!allHaveData) continue
+        // Long lots actifs à cette date (achetés et pas encore vendus)
+        const activeLong = longLots.filter(p =>
+          p.dateAchat <= dateStr && (!p.dateVente || p.dateVente > dateStr)
+        )
+        if (activeLong.length === 0) {
+          // Avancer cfIdx même si aucun lot actif (flux sans position = edge case)
+          while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= dateStr) cfIdx++
+          continue
         }
 
-        const prices = await Promise.all(active.map(async p => {
+        // Vérifier disponibilité des données avant de consommer les flux
+        if (!isToday) {
+          const allHaveData = activeLong.every(p => lookupClose(p.ticker, dateStr) !== null)
+          if (!allHaveData) continue // ne pas avancer cfIdx : les flux seront agrégés à la prochaine date valide
+        }
+
+        // Consommer les flux de capital entre la dernière date traitée et dateStr
+        let netCf = 0
+        while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= dateStr) {
+          const cf = cfEvents[cfIdx++]
+          netCf += cf.type === 'buy' ? cf.amount : -cf.amount
+        }
+
+        // Prix par ticker unique (évite les doublons pour les multi-lots)
+        const uniqueTickers = [...new Set(activeLong.map(p => p.ticker.toUpperCase()))]
+        const tickerPriceMap = new Map<string, { price: number; fxRate: number }>()
+        await Promise.all(uniqueTickers.map(async tk => {
+          const lot = activeLong.find(p => p.ticker.toUpperCase() === tk)!
           if (!isToday) {
-            const price = lookupClose(p.ticker, dateStr)!
-            const fxPair = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
-            const fxRate = fxPair ? (lookupClose(fxPair, dateStr) ?? p.tauxActuelCHF) : 1
-            return { price, fxRate }
+            const price = lookupClose(tk, dateStr)!
+            const fxPair = lot.devise !== 'CHF' ? `${lot.devise}CHF=X` : null
+            const fxRate = fxPair ? (lookupClose(fxPair, dateStr) ?? lot.tauxActuelCHF) : 1
+            tickerPriceMap.set(tk, { price, fxRate })
+          } else {
+            const d = await fetchPriceCached(lot.ticker, lot.devise, undefined)
+            tickerPriceMap.set(tk, d ?? { price: lot.prixActuel, fxRate: lot.tauxActuelCHF })
           }
-          const d = await fetchPriceCached(p.ticker, p.devise, undefined)
-          return d ?? { price: p.prixActuel, fxRate: p.tauxActuelCHF }
         }))
-        // PnL nominal : même formule que PnLChart
-        // delta lot (vente partielle) : qty(négatif) × price × fx + valeurCHF réalisée
-        // long lot : qty × price × fx - coût CHF
-        const nominal = active.reduce((s, p, j) => {
-          if (p.quantite < 0 && p.prixVente != null) {
-            return s + p.quantite * prices[j].price * prices[j].fxRate + p.valeurCHF
+
+        // Quantité nette par ticker = lots longs actifs - ventes partielles exécutées à cette date
+        const netQtyByTicker = new Map<string, number>()
+        for (const p of activeLong) {
+          const tk = p.ticker.toUpperCase()
+          netQtyByTicker.set(tk, (netQtyByTicker.get(tk) ?? 0) + p.quantite)
+        }
+        for (const p of allDeltaLots) {
+          if (p.dateAchat <= dateStr) {
+            const tk = p.ticker.toUpperCase()
+            netQtyByTicker.set(tk, (netQtyByTicker.get(tk) ?? 0) + p.quantite) // p.quantite < 0
           }
-          return s + p.quantite * prices[j].price * prices[j].fxRate - p.coutCHF
-        }, 0)
+        }
+
+        // Valeur de marché du portefeuille (positions nettes uniquement)
+        let portfolioV = 0
+        for (const [tk, netQty] of netQtyByTicker) {
+          if (netQty <= 0) continue
+          const pr = tickerPriceMap.get(tk)
+          if (!pr) continue
+          portfolioV += netQty * pr.price * pr.fxRate
+        }
+        if (portfolioV <= 0) { prevPortfolioV = 0; continue }
+
+        // Ajuster le nombre de parts selon les flux de capital
+        // Règle VLU : les parts sont créées/détruites au prix unitaire courant
+        // → la valeur unitaire ne saute pas lors d'un flux externe
+        if (totalUnits === 0) {
+          // Premier point : initialisation
+          totalUnits = INITIAL_UNITS
+        } else if (netCf !== 0) {
+          const prevUnitV = prevPortfolioV > 0 ? prevPortfolioV / totalUnits : portfolioV / INITIAL_UNITS
+          if (prevUnitV > 0) totalUnits += netCf / prevUnitV
+          if (totalUnits <= 0) totalUnits = INITIAL_UNITS
+        }
+
+        prevPortfolioV = portfolioV
+
+        const unitV = portfolioV / totalUnits
+        if (unitV > peakUnitV) peakUnitV = unitV
+
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
         const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
-        values.push({ x: isToday ? 1 : Math.min(t, 0.98), value: nominal, label })
+        const dd = peakUnitV > 0 ? ((unitV - peakUnitV) / peakUnitV) * 100 : 0
+        result.push({ x: isToday ? 1 : Math.min(t, 0.98), dd, label })
       }
+
       if (cancelled) return
-      let peak = -Infinity
-      const result: { x: number; dd: number; label: string }[] = []
-      for (const v of values) {
-        if (v.value > peak) peak = v.value
-        // Drawdown en % du pic PnL (ne démarre que quand le PnL a été positif)
-        result.push({ x: v.x, dd: peak > 0 ? ((v.value - peak) / peak) * 100 : 0, label: v.label })
-      }
       const maxDDPt = result.reduce((m, p) => p.dd < m.dd ? p : m, result[0])
       if (onMaxDrawdown && maxDDPt) onMaxDrawdown(maxDDPt.dd, maxDDPt.label)
       setDdPts(result)
