@@ -744,7 +744,7 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
         }, 0)
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
         const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
-        result.push({ x: isToday ? 1 : Math.min(t, 0.98), cost: cumCost, value, valueNoFX, label })
+        result.push({ x: isToday ? 1 : t, cost: cumCost, value, valueNoFX, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
       }
       if (!cancelled) { setMonthlyPts(result); setLoading(false) }
@@ -1107,7 +1107,7 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
         const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
         // Dividendes cumulés intégrés dans nominal et réel (cohérent avec la carte Gains réalisés)
-        result.push({ x: isToday ? 1 : Math.min(t, 0.98), nominal: nominal + dividendes, reel: reel + dividendes, nominalNoFX, dividendes, label })
+        result.push({ x: isToday ? 1 : t, nominal: nominal + dividendes, reel: reel + dividendes, nominalNoFX, dividendes, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
       }
       if (!cancelled) { setMonthlyPts(result); setLoading(false) }
@@ -1596,7 +1596,7 @@ function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey =
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
         const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
         const dd = peakUnitV > 0 ? ((unitV - peakUnitV) / peakUnitV) * 100 : 0
-        result.push({ x: isToday ? 1 : Math.min(t, 0.98), dd, label })
+        result.push({ x: isToday ? 1 : t, dd, label })
       }
 
       if (cancelled) return
