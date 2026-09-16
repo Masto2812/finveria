@@ -4372,7 +4372,7 @@ export default function PortfolioPage() {
                             <td colSpan={8} className="px-4 py-3 text-xs font-semibold text-[#5C6880] uppercase tracking-wider">
                               Total réalisé
                             </td>
-                            <td colSpan={2} className={`px-4 py-3 font-mono text-sm font-bold ${totalGain >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
+                            <td colSpan={3} className={`px-4 py-3 font-mono text-sm font-bold ${totalGain >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
                               {(totalGain >= 0 ? '+' : '') + chf(totalGain)}
                             </td>
                           </tr>
