@@ -3667,19 +3667,37 @@ export default function PortfolioPage() {
                   }
                   const realizedGain = gainVente + closedDivs
 
-                  // Dividendes : uniquement positions ouvertes (quantite > 0, pas de dateVente)
+                  // Dividendes : positions ouvertes avec quantité FIFO nette (après ventes partielles)
+                  // Construire la FIFO map globale pour toutes les positions
+                  type FifoMapEntry = { id: string; ticker: string; quantite: number; dateAchat: string; tauxActuelCHF: number }
+                  const fifoQtyMap = new Map<string, number>()
+                  const allTickers = [...new Set(positionsCalc.filter(p => p.quantite > 0 && !p.dateVente).map(p => p.ticker.toUpperCase()))]
+                  for (const tk of allTickers) {
+                    const lots = positionsCalc.filter(p => p.ticker.toUpperCase() === tk)
+                    const longs = lots.filter(p => p.quantite > 0 && !p.dateVente).sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
+                    let sold = lots.filter(p => p.quantite < 0 && p.prixVente != null).reduce((s, p) => s + Math.abs(p.quantite), 0)
+                    for (const ll of longs) {
+                      const rem = Math.min(ll.quantite, sold)
+                      fifoQtyMap.set(ll.id, ll.quantite - rem)
+                      sold = Math.max(0, sold - rem)
+                    }
+                  }
                   const divCumul = positionsCalc.reduce((s, p) => {
                     if (!(p.quantite > 0 && !p.dateVente)) return s
+                    const qFifo = fifoQtyMap.get(p.id) ?? p.quantite
+                    if (qFifo <= 0) return s
                     const entry = tickerDivs[p.ticker.toUpperCase()]
                     if (!entry) return s
                     const purchaseTs = new Date(p.dateAchat).getTime() / 1000
                     const cumul = entry.dividends.filter(d => d.ts >= purchaseTs).reduce((a, d) => a + d.amount, 0)
-                    return s + p.quantite * cumul * p.tauxActuelCHF
+                    return s + qFifo * cumul * p.tauxActuelCHF
                   }, 0)
                   const divTTM = positionsCalc.reduce((s, p) => {
                     if (!(p.quantite > 0 && !p.dateVente)) return s
+                    const qFifo = fifoQtyMap.get(p.id) ?? p.quantite
+                    if (qFifo <= 0) return s
                     const entry = tickerDivs[p.ticker.toUpperCase()]
-                    return s + (entry ? p.quantite * entry.dividendTTM * p.tauxActuelCHF : 0)
+                    return s + (entry ? qFifo * entry.dividendTTM * p.tauxActuelCHF : 0)
                   }, 0)
                   const divYield = totals.valeurTotal > 0 ? (divTTM / totals.valeurTotal) * 100 : 0
                   const total = realizedGain + divCumul
