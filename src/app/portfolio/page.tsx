@@ -3514,57 +3514,130 @@ export default function PortfolioPage() {
     rounded-lg px-3 py-2 text-sm text-[#1B3050] dark:text-[#E8E4DC]
     focus:outline-none focus:ring-2 focus:ring-[#2B6B5A] focus:border-transparent placeholder-[#9E9A93]`
 
-  // ── Drawdown max journalier (calcul précis depuis l'achat) ─────────────────
+  // ── Drawdown max journalier — méthode VLU (Time-Weighted Return) ───────────
   const _positionsKey = positionsCalc.map(p => p.ticker + '|' + p.dateAchat + '|' + p.quantite).join(',')
   useEffect(() => {
     if (positionsCalc.length === 0) return
     setDailyMDDLoading(true)
-    const tickers = [...new Set(positionsCalc.map(p => p.ticker.toUpperCase()))].join(',')
+    const longLotsPC = positionsCalc.filter(p => p.quantite > 0)
+    const allDeltaPC = positionsCalc.filter(p => p.quantite < 0 && p.prixVente != null)
+    const tickers = [...new Set(longLotsPC.map(p => p.ticker.toUpperCase()))].join(',')
     fetchHistory(tickers)
       .then((raw: Record<string, { dates: string[]; closes: number[] }>) => {
-        // Build price map ticker → date → close
+        // Build price map ticker → date → close (clé en majuscules)
         const priceMap: Record<string, Record<string, number>> = {}
         const dateSet = new Set<string>()
         for (const [ticker, hist] of Object.entries(raw)) {
-          priceMap[ticker] = {}
+          const tk = ticker.toUpperCase()
+          priceMap[tk] = {}
           for (let i = 0; i < hist.dates.length; i++) {
-            priceMap[ticker][hist.dates[i]] = hist.closes[i]
+            priceMap[tk][hist.dates[i]] = hist.closes[i]
             dateSet.add(hist.dates[i])
           }
         }
         const allDates = [...dateSet].sort()
+
         // Première date avec données réelles pour chaque ticker
         const tickerFirstDate: Record<string, string> = {}
         for (const [ticker, dayPrices] of Object.entries(priceMap)) {
           const sorted = Object.keys(dayPrices).filter(d => dayPrices[d] != null).sort()
-          if (sorted.length > 0) tickerFirstDate[ticker.toUpperCase()] = sorted[0]
+          if (sorted.length > 0) tickerFirstDate[ticker] = sorted[0]
         }
-        // Forward-fill last known price per ticker
-        const lastPrice: Record<string, number> = {}
-        let peak = -Infinity, peakDate = '', maxDD = 0, maxDDDate = '', maxDDPeakDate = ''
-        for (const date of allDates) {
-          for (const [ticker, dayPrices] of Object.entries(priceMap)) {
-            if (dayPrices[date] != null) lastPrice[ticker.toUpperCase()] = dayPrices[date]
+
+        // ── Événements de flux de capital (VLU) ──────────────────────────────
+        type CfEventD = { date: string; type: 'buy' | 'sell'; amount: number }
+        const cfEvents: CfEventD[] = []
+        for (const p of positionsCalc) {
+          if (p.quantite > 0) {
+            cfEvents.push({ date: p.dateAchat, type: 'buy', amount: p.coutCHF })
+            if (p.dateVente) cfEvents.push({ date: p.dateVente, type: 'sell', amount: p.valeurCHF })
+          } else if (p.quantite < 0 && p.prixVente != null) {
+            cfEvents.push({ date: p.dateAchat, type: 'sell', amount: p.valeurCHF })
           }
-          const active = positionsCalc.filter(p => p.dateAchat <= date)
-          if (active.length === 0) continue
-          // Ignorer les dates où des actifs actifs n'ont pas encore de données réelles
-          // (évite d'utiliser p.valeurCHF = valeur actuelle comme fallback historique)
-          if (!active.every(p => {
-            const t = p.ticker.toUpperCase()
-            return tickerFirstDate[t] != null && tickerFirstDate[t] <= date
-          })) continue
-          const value = active.reduce((s, p) => {
-            const px = lastPrice[p.ticker.toUpperCase()]
-            return s + (px != null ? p.quantite * px * p.tauxActuelCHF : 0)
-          }, 0)
-          if (value <= 0) continue
-          if (value > peak) { peak = value; peakDate = date }
-          if (peak > 0) {
-            const dd = ((value - peak) / peak) * 100
+        }
+        cfEvents.sort((a, b) => a.date.localeCompare(b.date))
+        let cfIdx = 0
+
+        // ── État VLU ─────────────────────────────────────────────────────────
+        const INITIAL_UNITS = 10000
+        let totalUnits = 0, prevPortfolioV = 0, peakUnitV = -Infinity
+        let peakDate = '', maxDD = 0, maxDDDate = '', maxDDPeakDate = ''
+
+        // Forward-fill last known price par ticker
+        const lastPrice: Record<string, number> = {}
+
+        for (const date of allDates) {
+          // Mise à jour des derniers prix connus
+          for (const [ticker, dayPrices] of Object.entries(priceMap)) {
+            if (dayPrices[date] != null) lastPrice[ticker] = dayPrices[date]
+          }
+
+          // Lots longs actifs à cette date
+          const activeLong = longLotsPC.filter(p =>
+            p.dateAchat <= date && (!p.dateVente || p.dateVente > date)
+          )
+          if (activeLong.length === 0) {
+            while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= date) cfIdx++
+            continue
+          }
+
+          // Exiger des données réelles pour tous les actifs actifs
+          const allHaveData = activeLong.every(p => {
+            const tk = p.ticker.toUpperCase()
+            return tickerFirstDate[tk] != null && tickerFirstDate[tk] <= date
+          })
+          if (!allHaveData) continue
+
+          // Consommer les flux de capital jusqu'à cette date
+          let netCf = 0
+          while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= date) {
+            const cf = cfEvents[cfIdx++]
+            netCf += cf.type === 'buy' ? cf.amount : -cf.amount
+          }
+
+          // Quantité nette par ticker (longs actifs − ventes partielles)
+          const netQtyByTicker = new Map<string, number>()
+          for (const p of activeLong) {
+            const tk = p.ticker.toUpperCase()
+            netQtyByTicker.set(tk, (netQtyByTicker.get(tk) ?? 0) + p.quantite)
+          }
+          for (const p of allDeltaPC) {
+            if (p.dateAchat <= date) {
+              const tk = p.ticker.toUpperCase()
+              netQtyByTicker.set(tk, (netQtyByTicker.get(tk) ?? 0) + p.quantite) // négatif
+            }
+          }
+
+          // Valeur de marché du portefeuille (prix forward-fill + FX courant)
+          let portfolioV = 0
+          for (const [tk, netQty] of netQtyByTicker) {
+            if (netQty <= 0) continue
+            const px = lastPrice[tk]
+            if (px == null) continue
+            const lot = activeLong.find(p => p.ticker.toUpperCase() === tk)!
+            portfolioV += netQty * px * lot.tauxActuelCHF
+          }
+          if (portfolioV <= 0) { prevPortfolioV = 0; continue }
+
+          // Ajustement VLU : créer/détruire des parts au prix unitaire courant
+          if (totalUnits === 0) {
+            totalUnits = INITIAL_UNITS
+          } else if (netCf !== 0) {
+            const prevUnitV = prevPortfolioV > 0 ? prevPortfolioV / totalUnits : portfolioV / INITIAL_UNITS
+            if (prevUnitV > 0) totalUnits += netCf / prevUnitV
+            if (totalUnits <= 0) totalUnits = INITIAL_UNITS
+          }
+          prevPortfolioV = portfolioV
+
+          const unitV = portfolioV / totalUnits
+          if (unitV > peakUnitV) { peakUnitV = unitV; peakDate = date }
+
+          if (peakUnitV > 0) {
+            const dd = ((unitV - peakUnitV) / peakUnitV) * 100
             if (dd < maxDD) { maxDD = dd; maxDDDate = date; maxDDPeakDate = peakDate }
           }
         }
+
         setDailyMaxDrawdown(maxDD < -0.1 ? { pct: maxDD, peakDate: maxDDPeakDate, date: maxDDDate } : null)
         setDailyMDDLoading(false)
       })
