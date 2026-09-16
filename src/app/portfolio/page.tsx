@@ -643,12 +643,10 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
   const zoomDragEvol = useRef<{ startX: number; startZoom: [number, number] } | null>(null)
   const _bustLastSeen = useRef(0)
 
-  // Drawdown : uniquement les positions ouvertes (évite les faux pics dus aux ventes)
-  const openData = useMemo(() => data.filter(p => p.quantite > 0 && !p.dateVente), [data])
-
+  // Drawdown calculé sur le PnL nominal (comme PnLChart) — inclut delta lots pour cohérence
   const { dates, firstDate, totalMs } = useMemo(() => {
-    if (openData.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
-    const sorted = [...openData].sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
+    if (data.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
+    const sorted = [...data].filter(p => p.quantite > 0).sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
     const today = new Date()
     if (range === '60d') {
       const list: string[] = []
@@ -979,12 +977,10 @@ function PnLChart({ data, tickerDivs, range, bustKey = 0 }: { data: PositionCalc
   const [zoomWPnl, setZoomWPnl] = useState<[number, number]>([0, 1])
   const zoomDragPnl = useRef<{ startX: number; startZoom: [number, number] } | null>(null)
 
-  // Drawdown : uniquement les positions ouvertes (évite les faux pics dus aux ventes)
-  const openData = useMemo(() => data.filter(p => p.quantite > 0 && !p.dateVente), [data])
-
+  // Drawdown calculé sur le PnL nominal (comme PnLChart) — inclut delta lots pour cohérence
   const { dates, firstDate, totalMs } = useMemo(() => {
-    if (openData.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
-    const sorted = [...openData].sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
+    if (data.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
+    const sorted = [...data].filter(p => p.quantite > 0).sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
     const today = new Date()
     if (range === '60d') {
       const list: string[] = []
@@ -1354,12 +1350,10 @@ function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: Posi
   const [zoomWDd, setZoomWDd] = useState<[number, number]>([0, 1])
   const zoomDragDd = useRef<{ startX: number; startZoom: [number, number] } | null>(null)
 
-  // Drawdown : uniquement les positions ouvertes (évite les faux pics dus aux ventes)
-  const openData = useMemo(() => data.filter(p => p.quantite > 0 && !p.dateVente), [data])
-
+  // Drawdown calculé sur le PnL nominal (comme PnLChart) — inclut delta lots pour cohérence
   const { dates, firstDate, totalMs } = useMemo(() => {
-    if (openData.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
-    const sorted = [...openData].sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
+    if (data.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
+    const sorted = [...data].filter(p => p.quantite > 0).sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
     const today = new Date()
     if (range === '60d') {
       const list: string[] = []
@@ -1385,22 +1379,22 @@ function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: Posi
     let d = new Date(first.getFullYear(), first.getMonth(), 1)
     while (d <= today) { list.push(d.toISOString().slice(0, 10)); d = new Date(d.getFullYear(), d.getMonth() + 1, 1) }
     return { dates: list, firstDate: first, totalMs: ms || 1 }
-  }, [openData, range])
+  }, [data, range])
 
-  const dataKey = useMemo(() => openData.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + bustKey, [openData, range, bustKey])
+  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + bustKey, [data, range, bustKey])
   const _bustLastSeenDD = useRef(0)
 
   useEffect(() => {
-    if (openData.length === 0 || dates.length === 0) return
+    if (data.length === 0 || dates.length === 0) return
     let cancelled = false
     setLoading(true)
     async function fetchAll() {
       const today = new Date().toISOString().slice(0, 10)
       const values: { x: number; value: number; label: string }[] = []
 
-      // ─── Bulk history (évite N×M appels /api/prices) ──────────────────────
-      const allTickers = [...new Set(openData.map(p => p.ticker.toUpperCase()))]
-      const fxPairs = [...new Set(openData.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
+      // ─── Bulk history (inclut delta lots pour cohérence avec PnLChart) ────
+      const allTickers = [...new Set(data.map(p => p.ticker.toUpperCase()))]
+      const fxPairs = [...new Set(data.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
       const isBust = bustKey > _bustLastSeenDD.current; _bustLastSeenDD.current = bustKey
       const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust) as Record<string, { dates: string[]; closes: number[] }>
       const lookupClose = makeLookupClose(histJson)
@@ -1409,7 +1403,7 @@ function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: Posi
         if (cancelled) return
         const dateStr = dates[i]
         const isToday = dateStr >= today
-        const active = openData.filter(p => p.dateAchat <= dateStr)
+        const active = data.filter(p => p.dateAchat <= dateStr)
         if (active.length === 0) continue
 
         // Pour les dates historiques, on exige des données réelles pour TOUS les actifs actifs.
@@ -1430,16 +1424,25 @@ function DrawdownChart({ data, onMaxDrawdown, range, bustKey = 0 }: { data: Posi
           const d = await fetchPriceCached(p.ticker, p.devise, undefined)
           return d ?? { price: p.prixActuel, fxRate: p.tauxActuelCHF }
         }))
-        const value = active.reduce((s, p, j) => s + p.quantite * prices[j].price * prices[j].fxRate, 0)
+        // PnL nominal : même formule que PnLChart
+        // delta lot (vente partielle) : qty(négatif) × price × fx + valeurCHF réalisée
+        // long lot : qty × price × fx - coût CHF
+        const nominal = active.reduce((s, p, j) => {
+          if (p.quantite < 0 && p.prixVente != null) {
+            return s + p.quantite * prices[j].price * prices[j].fxRate + p.valeurCHF
+          }
+          return s + p.quantite * prices[j].price * prices[j].fxRate - p.coutCHF
+        }, 0)
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
         const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
-        values.push({ x: isToday ? 1 : Math.min(t, 0.98), value, label })
+        values.push({ x: isToday ? 1 : Math.min(t, 0.98), value: nominal, label })
       }
       if (cancelled) return
       let peak = -Infinity
       const result: { x: number; dd: number; label: string }[] = []
       for (const v of values) {
         if (v.value > peak) peak = v.value
+        // Drawdown en % du pic PnL (ne démarre que quand le PnL a été positif)
         result.push({ x: v.x, dd: peak > 0 ? ((v.value - peak) / peak) * 100 : 0, label: v.label })
       }
       const maxDDPt = result.reduce((m, p) => p.dd < m.dd ? p : m, result[0])
