@@ -782,7 +782,7 @@ function EvolChart({ data, showFX, range, bustKey = 0 }: { data: PositionCalc[];
   const magVis = Math.pow(10, Math.floor(Math.log10(rawStepVis)))
   const normVis = rawStepVis / magVis
   const niceStepVis = (normVis < 1.5 ? 1 : normVis < 3 ? 2 : normVis < 7 ? 5 : 10) * magVis
-  const minVVis = range !== 'all' ? Math.floor(_minVis / niceStepVis) * niceStepVis : Math.min(0, Math.floor(_minVis / niceStepVis) * niceStepVis)
+  const minVVis = (range !== 'all' || isZoomedEvol) ? Math.floor(_minVis / niceStepVis) * niceStepVis : Math.min(0, Math.floor(_minVis / niceStepVis) * niceStepVis)
   const maxVVis = Math.ceil(_maxVis / niceStepVis) * niceStepVis
   const spanVis = maxVVis - minVVis || 1
   const px = (t: number) => PAD.l + ((t - zE[0]) / (zE[1] - zE[0])) * iW
