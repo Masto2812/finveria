@@ -3603,8 +3603,9 @@ export default function PortfolioPage() {
     setDailyMDDLoading(true)
     const longLotsPC = positionsCalc.filter(p => p.quantite > 0)
     const allDeltaPC = positionsCalc.filter(p => p.quantite < 0 && p.prixVente != null)
-    const tickers = [...new Set(longLotsPC.map(p => p.ticker.toUpperCase()))].join(',')
-    fetchHistory(tickers)
+    const tickersPC = [...new Set(longLotsPC.map(p => p.ticker.toUpperCase()))]
+    const fxPairsPC = [...new Set(longLotsPC.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
+    fetchHistory([...tickersPC, ...fxPairsPC].join(','))
       .then((raw: Record<string, { dates: string[]; closes: number[] }>) => {
         // Build price map ticker → date → close (clé en majuscules)
         const priceMap: Record<string, Record<string, number>> = {}
@@ -3690,14 +3691,16 @@ export default function PortfolioPage() {
             }
           }
 
-          // Valeur de marché du portefeuille (prix forward-fill + FX courant)
+          // Valeur de marché du portefeuille (prix forward-fill + FX historique forward-fill)
           let portfolioV = 0
           for (const [tk, netQty] of netQtyByTicker) {
             if (netQty <= 0) continue
             const px = lastPrice[tk]
             if (px == null) continue
             const lot = activeLong.find(p => p.ticker.toUpperCase() === tk)!
-            portfolioV += netQty * px * lot.tauxActuelCHF
+            const fxKey = lot.devise !== 'CHF' ? `${lot.devise}CHF=X` : null
+            const fxRate = fxKey ? (lastPrice[fxKey] ?? lot.tauxActuelCHF) : 1
+            portfolioV += netQty * px * fxRate
           }
           if (portfolioV <= 0) { prevPortfolioV = 0; continue }
 
