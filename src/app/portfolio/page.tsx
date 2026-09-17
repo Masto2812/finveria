@@ -805,7 +805,7 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
 
   if (!points || points.length < 2) return (
     <div className="flex items-center justify-center h-36 text-sm text-[#9E9A93]">
-      Ajoutez au moins 2 positions pour voir le graphique
+      {range === 'weekly' ? 'Détention trop courte pour la vue hebdomadaire' : range === '60d' ? 'Pas assez de données sur 60 jours' : 'Détention trop courte pour la vue mensuelle'}
     </div>
   )
 
@@ -1209,7 +1209,7 @@ function PnLChart({ data, range, dateFrom, dateTo, bustKey = 0 }: { data: Positi
 
   if (!points || points.length < 2) return (
     <div className="flex items-center justify-center h-36 text-sm text-[#9E9A93]">
-      Ajoutez au moins 2 positions pour voir le graphique
+      {range === 'weekly' ? 'Détention trop courte pour la vue hebdomadaire' : range === '60d' ? 'Pas assez de données sur 60 jours' : 'Détention trop courte pour la vue mensuelle'}
     </div>
   )
 
