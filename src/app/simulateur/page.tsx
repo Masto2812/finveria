@@ -136,10 +136,6 @@ export default function SimulateurPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // ── Import depuis portfolio ──────────────────────────────────────────────
-  const [importYear,   setImportYear]   = useState<number>(new Date().getFullYear())
-  const [importStatus, setImportStatus] = useState<'idle' | 'ok' | 'missing' | 'empty'>('idle')
-
   // ── Chargement initial depuis Supabase ──────────────────────────────────────
   useEffect(() => {
     const supabase = createClient()
@@ -226,29 +222,6 @@ export default function SimulateurPage() {
     return { rev, gains, perts, fr, gainsNets, divImposables, impotAnticipe, avs, ifdSurGains, impotCantonal, coutTotal, tauxEffectif, coutSiPrive, surcout }
   }, [revenuPro, gainsCapitaux, pertes, frais, dividendesCHPro, dividendesETRPro, marie, cantonData])
 
-  function importFromPortfolio() {
-    try {
-      const raw = localStorage.getItem('finveria_dividends')
-      if (!raw) { setImportStatus('missing'); return }
-      const data = JSON.parse(raw) as { years: Record<string, { ch: number; etr: number }>; updatedAt: string }
-      const row = data.years?.[importYear]
-      if (!row) { setImportStatus('empty'); return }
-      const ch  = Math.round(row.ch)
-      const etr = Math.round(row.etr)
-      if (mode === 'prive') {
-        setDividendesCH(ch  > 0 ? String(ch)  : '')
-        setDividendesETR(etr > 0 ? String(etr) : '')
-      } else {
-        setDividendesCHPro(ch  > 0 ? String(ch)  : '')
-        setDividendesETRPro(etr > 0 ? String(etr) : '')
-      }
-      setImportStatus('ok')
-      setTimeout(() => setImportStatus('idle'), 3500)
-    } catch {
-      setImportStatus('missing')
-    }
-  }
-
   const hasDataPrive = !!(parseFloat(revenu) || parseFloat(dividendesCH) || parseFloat(dividendesETR))
   const hasDataPro   = !!(parseFloat(revenuPro) || parseFloat(gainsCapitaux) || parseFloat(dividendesCHPro) || parseFloat(dividendesETRPro))
 
@@ -290,38 +263,6 @@ export default function SimulateurPage() {
                   {m === 'prive' ? '👤 Investisseur privé' : '💼 Trader pro'}
                 </button>
               ))}
-            </div>
-
-            {/* ── Import depuis le portfolio ── */}
-            <div className={`${CARD_CLS} p-4`}>
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-xs font-semibold text-[#9E9A93] uppercase tracking-wider">Importer depuis le portfolio</h2>
-                <span className="text-[10px] text-[#9E9A93]">Dividendes reçus</span>
-              </div>
-              <div className="flex gap-2 mb-3">
-                {([new Date().getFullYear(), new Date().getFullYear() - 1] as number[]).map(y => (
-                  <button key={y} onClick={() => { setImportYear(y); setImportStatus('idle') }}
-                    className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors ${importYear === y ? 'bg-[#2B6B5A] text-white border-[#2B6B5A]' : 'text-[#5C6880] dark:text-[#7B8DA6] border-[#DDD9D1] dark:border-[#1e3347] hover:border-[#2B6B5A]'}`}>
-                    {y}
-                  </button>
-                ))}
-              </div>
-              <button onClick={importFromPortfolio}
-                className="w-full py-2 px-3 rounded-lg text-sm font-medium border border-[#2B6B5A] text-[#2B6B5A] dark:text-[#5EC9A5] hover:bg-[#E8F5F1] dark:hover:bg-[#0d2e24] transition-colors">
-                📥 Importer les dividendes {importYear}
-              </button>
-              {importStatus === 'ok' && (
-                <p className="text-xs text-green-600 dark:text-green-400 mt-2 text-center">✓ Dividendes {importYear} importés</p>
-              )}
-              {importStatus === 'missing' && (
-                <p className="text-xs text-[#B5820F] mt-2 text-center">⚠ Ouvrez d&apos;abord votre portfolio pour charger les données</p>
-              )}
-              {importStatus === 'empty' && (
-                <p className="text-xs text-[#9E9A93] mt-2 text-center">Aucun dividende trouvé pour {importYear}</p>
-              )}
-              <p className="text-[10px] text-[#9E9A93] mt-2 leading-relaxed">
-                Dividendes effectivement reçus en {importYear}, convertis au taux CHF actuel. Vérifiez et ajustez si nécessaire.
-              </p>
             </div>
 
             {/* Situation fiscale */}
