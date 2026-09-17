@@ -3861,6 +3861,7 @@ export default function PortfolioPage() {
   const [deleteHistoPrice, setDeleteHistoPrice] = useState<{ price: number; fxRate: number } | null>(null)
   const [deleteHistoLoading, setDeleteHistoLoading] = useState(false)
   const [quantiteRaw, setQuantiteRaw] = useState('')  // string pour permettre la saisie de 0.00001
+  const [quantiteError, setQuantiteError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const [fetchingModal, setFetchingModal] = useState(false)
@@ -4133,13 +4134,13 @@ export default function PortfolioPage() {
       .finally(() => setSliceHistoLoading(false))
   }, [sliceDate, sliceMode, form.ticker, form.devise])
 
-  function openAdd() { setEditId(null); setForm(EMPTY_FORM); setQuantiteRaw(''); setFetchModalError(null); setManuel(false); setSliceMode(false); setSliceDate(''); setSliceQuantiteRaw(''); setSliceQuantite(0); setSlicePrixVenteRaw(''); setSlicePrixVente(undefined); setSliceHistoPrice(null); setGroupHasSlices(false); setFormTickerMinDate(undefined); setShowModal(true) }
+  function openAdd() { setEditId(null); setForm(EMPTY_FORM); setQuantiteRaw(''); setQuantiteError(null); setFetchModalError(null); setManuel(false); setSliceMode(false); setSliceDate(''); setSliceQuantiteRaw(''); setSliceQuantite(0); setSlicePrixVenteRaw(''); setSlicePrixVente(undefined); setSliceHistoPrice(null); setGroupHasSlices(false); setFormTickerMinDate(undefined); setShowModal(true) }
   function openEdit(p: Position) {
     // Calculer le total du groupe (tous lots actifs du même ticker)
     const grp = groupedPositions[p.ticker.toUpperCase()]
     const groupTotal = grp ? grp.reduce((s, pc) => s + pc.quantite, 0) : p.quantite
     const hasSlices = grp ? grp.length > 1 : false
-    setEditId(p.id); setForm({ ...p }); setQuantiteRaw(String(p.quantite)); setFetchModalError(null); setManuel(true)
+    setEditId(p.id); setForm({ ...p }); setQuantiteRaw(String(p.quantite)); setQuantiteError(null); setFetchModalError(null); setManuel(true)
     setSliceMode(false); setSliceDate(p.dateAchat); setSliceQuantiteRaw(String(groupTotal)); setSliceQuantite(groupTotal)
     setSliceGroupTotal(groupTotal)
     setGroupHasSlices(hasSlices)
@@ -4182,6 +4183,11 @@ export default function PortfolioPage() {
   async function saveForm() {
     if (!form.ticker) return
     if (editId && sliceMode && sliceDate && form.dateAchat && sliceDate < form.dateAchat) return
+    if (!sliceMode && (!form.quantite || form.quantite === 0)) {
+      setQuantiteError('Veuillez saisir une quantité supérieure à 0')
+      return
+    }
+    setQuantiteError(null)
     setShowModal(false)
 
     if (editId && sliceMode && sliceDate) {
@@ -5486,17 +5492,18 @@ export default function PortfolioPage() {
                       {sliceGroupTotal}
                     </div>
                   ) : (
-                    <input className={inputCls} type="text" inputMode="decimal"
+                    <input className={`${inputCls}${quantiteError ? ' border-red-400 dark:border-red-500 ring-1 ring-red-400' : ''}`} type="text" inputMode="decimal"
                       placeholder="ex: 0.00001" value={quantiteRaw}
                       onChange={e => {
                         const raw = e.target.value
                         if (raw === '' || /^[0-9]*[.,]?[0-9]*$/.test(raw)) {
                           setQuantiteRaw(raw)
                           const num = parseFloat(raw.replace(',', '.'))
-                          if (!isNaN(num)) setForm(f => ({ ...f, quantite: num }))
+                          if (!isNaN(num)) { setForm(f => ({ ...f, quantite: num })); if (num > 0) setQuantiteError(null) }
                           else if (raw === '') setForm(f => ({ ...f, quantite: 0 }))
                         }
                       }} />
+                    {quantiteError && <p className="text-xs text-red-500 mt-1">{quantiteError}</p>}
                   )}
                 </div>
                 <div>
