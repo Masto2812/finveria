@@ -647,6 +647,7 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
   const { dates, firstDate, totalMs } = useMemo(() => {
     if (data.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
     const sorted = [...data].filter(p => p.quantite > 0).sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
+    if (sorted.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
     const today = new Date()
     if (range === '60d') {
       const list: string[] = []
