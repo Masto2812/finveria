@@ -628,7 +628,7 @@ function makeLookupClose(histJson: Record<string, { dates: string[]; closes: num
 
 // ─── Chart: Evolution ─────────────────────────────────────────────────────────
 function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { data: PositionCalc[]; showFX?: boolean; range?: 'all' | '60d' | 'weekly'; dateFrom?: string; dateTo?: string; bustKey?: number }) {
-  const W = 600, H = 180, PAD = { t: 16, r: 16, b: 36, l: 64 }
+  const W = 600, H = 200, PAD = { t: 18, r: 16, b: 40, l: 72 }
   const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
 
   const [monthlyPts, setMonthlyPts] = useState<{ x: number; cost: number; value: number; valueNoFX: number; label: string }[] | null>(null)
@@ -663,21 +663,35 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
     const first = new Date(sorted[0].dateAchat)
     const ms = today.getTime() - first.getTime()
     if (range === 'weekly') {
+      // Aligner sur les vraies semaines lundi-dimanche
+      // Parser la date en heure locale pour que getDay() retourne le bon jour
+      const [fy, fm, fd] = sorted[0].dateAchat.split('-').map(Number)
+      const firstLocal = new Date(fy, fm - 1, fd)
+      const dow = firstLocal.getDay() // 0=dim, 1=lun, ..., 6=sam
+      const daysToMon = dow === 0 ? 6 : dow - 1
+      const mondayOfFirstWeek = new Date(firstLocal)
+      mondayOfFirstWeek.setDate(firstLocal.getDate() - daysToMon)
+      // Partir de la semaine précédente pour que le premier point soit ancré
+      const startMonday = new Date(mondayOfFirstWeek)
+      startMonday.setDate(mondayOfFirstWeek.getDate() - 7)
       const list: string[] = []
-      let d = new Date(first)
+      let d = new Date(startMonday)
       while (d <= today) {
-        list.push(d.toISOString().slice(0, 10))
+        list.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
         d = new Date(d); d.setDate(d.getDate() + 7)
       }
-      return { dates: list, firstDate: first, totalMs: ms || 1 }
+      return { dates: list, firstDate: startMonday, totalMs: (today.getTime() - startMonday.getTime()) || 1 }
     }
+    // Partir du mois précédant le premier achat (même logique que weekly)
+    const startMonth = new Date(first.getFullYear(), first.getMonth() - 1, 1)
     const list: string[] = []
-    let d = new Date(first.getFullYear(), first.getMonth(), 1)
-    while (d <= today) {
-      list.push(d.toISOString().slice(0, 10))
-      d = new Date(d.getFullYear(), d.getMonth() + 1, 1)
+    let dYear = startMonth.getFullYear(), dMonth = startMonth.getMonth()
+    const todayYM = today.getFullYear() * 12 + today.getMonth()
+    while (dYear * 12 + dMonth <= todayYM) {
+      list.push(`${dYear}-${String(dMonth + 1).padStart(2, '0')}-01`)
+      dMonth++; if (dMonth > 11) { dMonth = 0; dYear++ }
     }
-    return { dates: list, firstDate: first, totalMs: ms || 1 }
+    return { dates: list, firstDate: startMonth, totalMs: (today.getTime() - startMonth.getTime()) || 1 }
   }, [data, range, dateFrom, dateTo])
 
   const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + bustKey, [data, range, bustKey])
@@ -703,19 +717,32 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
         const dateStr = dates[i]
-        const isToday = dateStr >= today
-        const activePosns = data.filter(p => p.dateAchat <= dateStr)
+        // Mode hebdomadaire : évaluer au dimanche (fin de semaine) pour capturer le
+        // vendredi via forward-fill. Placer le point sur le lundi (dateStr) en x/label.
+        // Mode mensuel : évaluer au dernier jour du mois (même logique que weekly → dimanche).
+        const evalDateStr = range === 'weekly' ? (() => {
+          const sun = new Date(dateStr); sun.setDate(sun.getDate() + 6)
+          const sunStr = sun.toISOString().slice(0, 10)
+          return sunStr <= today ? sunStr : today
+        })() : range === 'all' ? (() => {
+          const [dy, dm] = dateStr.split('-').map(Number)
+          const lastDay = new Date(dy, dm, 0) // dernier jour du mois en heure locale
+          const s = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
+          return s <= today ? s : today
+        })() : dateStr
+        const isToday = evalDateStr >= today
+        const activePosns = data.filter(p => p.dateAchat <= evalDateStr)
         if (activePosns.length === 0) { setProgress(Math.round((i + 1) / dates.length * 100)); continue }
 
         // histStart computed once above the loop (not per iteration)
-        const useOldest = !isToday && dateStr < histStart
+        const useOldest = !isToday && evalDateStr < histStart
 
         const prices = await Promise.all(activePosns.map(async p => {
           if (!isToday) {
-            const price = lookupClose(p.ticker, dateStr)
+            const price = lookupClose(p.ticker, evalDateStr)
             if (price !== null) {
               const fxPair = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
-              const fxRate = fxPair ? (lookupClose(fxPair, dateStr) ?? p.tauxActuelCHF) : 1
+              const fxRate = fxPair ? (lookupClose(fxPair, evalDateStr) ?? p.tauxActuelCHF) : 1
               return { price, fxRate }
             }
             // Date is before history window: use oldest history price (avoids rate-limiting Yahoo)
@@ -728,7 +755,7 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
               return { price: price0, fxRate: fxRate0 }
             }
           }
-          const d = await fetchPriceCached(p.ticker, p.devise, isToday ? undefined : dateStr)
+          const d = await fetchPriceCached(p.ticker, p.devise, isToday ? undefined : evalDateStr)
           return d ?? { price: p.prixActuel, fxRate: p.tauxActuelCHF }
         }))
 
@@ -746,6 +773,16 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
         const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
         result.push({ x: isToday ? 1 : t, cost: cumCost, value, valueNoFX, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
+      }
+      // Normaliser la valeur actuelle pour qu'elle parte du même point que la valeur investie
+      // à la première semaine/mois avec des positions
+      if ((range === 'all' || range === 'weekly') && result.length > 0) {
+        const firstWithCost = result.find(pt => pt.cost > 0)
+        if (firstWithCost) {
+          const offV = firstWithCost.value - firstWithCost.cost
+          const offVNoFX = firstWithCost.valueNoFX - firstWithCost.cost
+          for (const pt of result) { pt.value -= offV; pt.valueNoFX -= offVNoFX }
+        }
       }
       if (!cancelled) { setMonthlyPts(result); setLoading(false) }
     }
@@ -831,9 +868,13 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
           return
         }
         const t = zE[0] + ((mx - PAD.l) / iW) * (zE[1] - zE[0])
-        let best = 0, bd = Infinity
-        points.forEach((p, i) => { const d = Math.abs(p.x - t); if (d < bd) { bd = d; best = i } })
-        setHoverIdx(best); setHoverMxEvol(mx)
+        let best = -1, bd = Infinity
+        points.forEach((p, i) => {
+          if (p.x < zE[0] - 0.001 || p.x > zE[1] + 0.001) return
+          const d = Math.abs(p.x - t); if (d < bd) { bd = d; best = i }
+        })
+        if (best < 0) return
+        setHoverIdx(best); setHoverMxEvol(Math.max(px(firstVisE.x), Math.min(mx, px(lastVisE.x))))
       }}
       onWheel={e => {
         e.preventDefault()
@@ -863,7 +904,7 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
       </defs>
       {tickVals.map((v, i) => (
         <g key={i}>
-          <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)} stroke="#DDD9D1" strokeWidth="0.5" strokeDasharray="3 3" />
+          <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)} stroke="#E2DDD6" strokeWidth="0.4" strokeDasharray="4 4" />
           <text x={PAD.l - 6} y={py(v) + 4} textAnchor="end" fontSize="10" fill="#9E9A93">
             {(() => {
               const kDec = niceStepVis >= 1000 ? 0 : niceStepVis >= 100 ? 1 : 2
@@ -884,17 +925,17 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
         const p1 = points[i + 1]
         const d0 = p0.value - p0.cost, d1 = p1.value - p1.cost
         if (d0 >= 0 && d1 >= 0) {
-          return <line key={i} x1={px(p0.x)} y1={py(p0.value)} x2={px(p1.x)} y2={py(p1.value)} stroke="#2B6B5A" strokeWidth="2" strokeLinecap="round" />
+          return <line key={i} x1={px(p0.x)} y1={py(p0.value)} x2={px(p1.x)} y2={py(p1.value)} stroke="#2B6B5A" strokeWidth="2.5" strokeLinecap="round" />
         } else if (d0 <= 0 && d1 <= 0) {
-          return <line key={i} x1={px(p0.x)} y1={py(p0.value)} x2={px(p1.x)} y2={py(p1.value)} stroke="#DC2626" strokeWidth="2" strokeLinecap="round" />
+          return <line key={i} x1={px(p0.x)} y1={py(p0.value)} x2={px(p1.x)} y2={py(p1.value)} stroke="#DC2626" strokeWidth="2.5" strokeLinecap="round" />
         } else {
           const t = d0 / (d0 - d1)
           const cx = px(p0.x) + t * (px(p1.x) - px(p0.x))
           const cy = py(p0.value) + t * (py(p1.value) - py(p0.value))
           return (
             <g key={i}>
-              <line x1={px(p0.x)} y1={py(p0.value)} x2={cx} y2={cy} stroke={d0 > 0 ? '#2B6B5A' : '#DC2626'} strokeWidth="2" strokeLinecap="round" />
-              <line x1={cx} y1={cy} x2={px(p1.x)} y2={py(p1.value)} stroke={d0 > 0 ? '#DC2626' : '#2B6B5A'} strokeWidth="2" strokeLinecap="round" />
+              <line x1={px(p0.x)} y1={py(p0.value)} x2={cx} y2={cy} stroke={d0 > 0 ? '#2B6B5A' : '#DC2626'} strokeWidth="2.5" strokeLinecap="round" />
+              <line x1={cx} y1={cy} x2={px(p1.x)} y2={py(p1.value)} stroke={d0 > 0 ? '#DC2626' : '#2B6B5A'} strokeWidth="2.5" strokeLinecap="round" />
             </g>
           )
         }
@@ -906,10 +947,10 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
         if (showValeur) lines.push({ label: 'Valeur', val: hovered.value, col: g >= 0 ? '#4ADE80' : '#F87171' })
         if (showInvesti) lines.push({ label: 'Investi', val: hovered.cost, col: '#9E9A93' })
         if (showHorsFX) lines.push({ label: 'Hors FX', val: hovered.valueNoFX, col: gNoFX >= 0 ? '#F59E0B' : '#F87171' })
-        const bh = 14 + Math.max(lines.length, 1) * 16
+        const bh = 16 + Math.max(lines.length, 1) * 16
         const refV = showValeur ? hovered.value : showHorsFX ? hovered.valueNoFX : hovered.cost
         const ty = py(refV) - 10
-        const tx = Math.min(Math.max(px(hovered.x), PAD.l + 62), W - PAD.r - 62)
+        const tx = Math.min(Math.max(px(hovered.x), PAD.l + 70), W - PAD.r - 70)
         return (
           <g>
             <line x1={hoverMxEvol ?? px(hovered.x)} y1={PAD.t} x2={hoverMxEvol ?? px(hovered.x)} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
@@ -917,12 +958,12 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
             {showInvesti && <circle cx={px(hovered.x)} cy={py(hovered.cost)} r="3" fill="#9E9A93" />}
             {showHorsFX && <circle cx={px(hovered.x)} cy={py(hovered.valueNoFX)} r="3" fill="#B5820F" />}
             <g transform={`translate(${tx}, ${ty < PAD.t + bh + 4 ? PAD.t + bh + 4 : ty})`}>
-              <rect x="-62" y={-bh} width="124" height={bh + 4} rx="4" fill="#1C2B22" opacity="0.92" />
-              <text x="0" y={-(bh - 12)} textAnchor="middle" fontSize="10" fill="#9E9A93">{hovered.label}</text>
+              <rect x="-70" y={-bh} width="140" height={bh + 6} rx="5" fill="#1A2920" stroke="#2D4A38" strokeWidth="0.6" opacity="0.96" />
+              <text x="0" y={-(bh - 13)} textAnchor="middle" fontSize="10" fontWeight="500" fill="#B8B3AB">{hovered.label}</text>
               {lines.map((l, i) => (
                 <g key={i}>
-                  <text x="-4" y={-(bh - 12) + 14 + i * 16} textAnchor="end" fontSize="10" fill="#9E9A93">{l.label}</text>
-                  <text x="4" y={-(bh - 12) + 14 + i * 16} textAnchor="start" fontSize="10" fill={l.col}>{l.val >= 1000 || l.val <= -1000 ? `${(l.val/1000).toFixed(1)}k` : l.val.toFixed(0)} CHF</text>
+                  <text x="-6" y={-(bh - 13) + 15 + i * 16} textAnchor="end" fontSize="10" fill="#7A766F">{l.label}</text>
+                  <text x="6" y={-(bh - 13) + 15 + i * 16} textAnchor="start" fontSize="11" fontWeight="600" fill={l.col}>{l.val >= 1000 || l.val <= -1000 ? `${(l.val/1000).toFixed(1)}k` : l.val.toFixed(0)} CHF</text>
                 </g>
               ))}
             </g>
@@ -933,10 +974,20 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
           d={points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${px(p.x)} ${py(p.valueNoFX)}`).join(' ')}
           fill="none" stroke="#B5820F" strokeWidth="1.5" strokeDasharray="6 3" opacity="0.7"
         />}
-      {showValeur && <circle cx={px(points[points.length-1].x)} cy={py(lastVal)} r="4" fill={lastVal >= points[points.length-1].cost ? '#2B6B5A' : '#DC2626'} />}
+      {showValeur && <><circle cx={px(points[points.length-1].x)} cy={py(lastVal)} r="7" fill="none" stroke={lastVal >= points[points.length-1].cost ? '#2B6B5A' : '#DC2626'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(lastVal)} r="4" fill={lastVal >= points[points.length-1].cost ? '#2B6B5A' : '#DC2626'} /></>}
       </g>
-      <text x={Math.max(PAD.l + 4, Math.min(W - PAD.r - 4, px(firstVisE.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{firstVisE.label}</text>
-      <text x={Math.max(PAD.l + 4, Math.min(W - PAD.r - 4, px(lastVisE.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{lastVisE === points[points.length-1] ? 'Auj.' : lastVisE.label}</text>
+      {(() => {
+        const _vp = visPtsE; const _n = _vp.length
+        const _maxL = Math.max(2, Math.min(5, Math.floor(iW / 88)))
+        const _step = Math.max(1, Math.ceil(_n / _maxL))
+        const _idxs: number[] = [0]
+        for (let _i = _step; _i < _n - 1; _i += _step) _idxs.push(_i)
+        _idxs.push(_n - 1)
+        return _idxs.map(idx => {
+          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]
+          return <text key={idx} x={Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
+        })
+      })()}
     </svg>
     <div className="flex items-center gap-2 mt-2 flex-wrap">
       <button type="button" onClick={() => setShowInvesti(v => !v)}
@@ -969,7 +1020,7 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
   const [showNominal, setShowNominal] = useState(true)
   const [showReel, setShowReel] = useState(false)
   const [showDividendes, setShowDividendes] = useState(false)
-  const W = 600, H = 180, PAD = { t: 16, r: 16, b: 36, l: 64 }
+  const W = 600, H = 200, PAD = { t: 18, r: 16, b: 40, l: 72 }
   const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
 
   const [monthlyPts, setMonthlyPts] = useState<{ x: number; nominal: number; reel: number; nominalNoFX: number; dividendes: number; label: string }[] | null>(null)
@@ -1000,21 +1051,35 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
     const first = new Date(sorted[0].dateAchat)
     const ms = today.getTime() - first.getTime()
     if (range === 'weekly') {
+      // Aligner sur les vraies semaines lundi-dimanche
+      // Parser la date en heure locale pour que getDay() retourne le bon jour
+      const [fy, fm, fd] = sorted[0].dateAchat.split('-').map(Number)
+      const firstLocal = new Date(fy, fm - 1, fd)
+      const dow = firstLocal.getDay() // 0=dim, 1=lun, ..., 6=sam
+      const daysToMon = dow === 0 ? 6 : dow - 1
+      const mondayOfFirstWeek = new Date(firstLocal)
+      mondayOfFirstWeek.setDate(firstLocal.getDate() - daysToMon)
+      // Partir de la semaine précédente pour que le premier point soit à 0
+      const startMonday = new Date(mondayOfFirstWeek)
+      startMonday.setDate(mondayOfFirstWeek.getDate() - 7)
       const list: string[] = []
-      let d = new Date(first)
+      let d = new Date(startMonday)
       while (d <= today) {
-        list.push(d.toISOString().slice(0, 10))
+        list.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
         d = new Date(d); d.setDate(d.getDate() + 7)
       }
-      return { dates: list, firstDate: first, totalMs: ms || 1 }
+      return { dates: list, firstDate: startMonday, totalMs: (today.getTime() - startMonday.getTime()) || 1 }
     }
+    // Partir du mois précédant le premier achat (même logique que weekly)
+    const startMonth = new Date(first.getFullYear(), first.getMonth() - 1, 1)
     const list: string[] = []
-    let d = new Date(first.getFullYear(), first.getMonth(), 1)
-    while (d <= today) {
-      list.push(d.toISOString().slice(0, 10))
-      d = new Date(d.getFullYear(), d.getMonth() + 1, 1)
+    let dYear = startMonth.getFullYear(), dMonth = startMonth.getMonth()
+    const todayYM = today.getFullYear() * 12 + today.getMonth()
+    while (dYear * 12 + dMonth <= todayYM) {
+      list.push(`${dYear}-${String(dMonth + 1).padStart(2, '0')}-01`)
+      dMonth++; if (dMonth > 11) { dMonth = 0; dYear++ }
     }
-    return { dates: list, firstDate: first, totalMs: ms || 1 }
+    return { dates: list, firstDate: startMonth, totalMs: (today.getTime() - startMonth.getTime()) || 1 }
   }, [data, range])
 
   const divKey = Object.keys(tickerDivs ?? {}).sort().join(',')
@@ -1042,19 +1107,39 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
         const dateStr = dates[i]
-        const isToday = dateStr >= today
-        const activePosns = data.filter(p => p.dateAchat <= dateStr)
-        if (activePosns.length === 0) { setProgress(Math.round((i + 1) / dates.length * 100)); continue }
+        // Mode hebdomadaire : évaluer au dimanche (fin de semaine) pour capturer le
+        // vendredi via forward-fill. Placer le point sur le lundi (dateStr) en x/label.
+        // Mode mensuel : évaluer au dernier jour du mois (même logique que weekly → dimanche).
+        const evalDateStr = range === 'weekly' ? (() => {
+          const sun = new Date(dateStr); sun.setDate(sun.getDate() + 6)
+          const sunStr = sun.toISOString().slice(0, 10)
+          return sunStr <= today ? sunStr : today
+        })() : range === 'all' ? (() => {
+          const [dy, dm] = dateStr.split('-').map(Number)
+          const lastDay = new Date(dy, dm, 0) // dernier jour du mois en heure locale
+          const s = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
+          return s <= today ? s : today
+        })() : dateStr
+        const isToday = evalDateStr >= today
+        const activePosns = data.filter(p => p.dateAchat <= evalDateStr)
+        if (activePosns.length === 0) {
+          if ((range === 'all' || range === 'weekly') && result.length === 0) {
+            const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
+            const label = range === 'weekly' ? fmtDate(dateStr) : fmtMonth(dateStr)
+            result.push({ x: t, nominal: 0, reel: 0, nominalNoFX: 0, dividendes: 0, label })
+          }
+          setProgress(Math.round((i + 1) / dates.length * 100)); continue
+        }
 
         // histStart computed once above the loop (not per iteration)
-        const useOldest = !isToday && dateStr < histStart
+        const useOldest = !isToday && evalDateStr < histStart
 
         const prices = await Promise.all(activePosns.map(async p => {
           if (!isToday) {
-            const price = lookupClose(p.ticker, dateStr)
+            const price = lookupClose(p.ticker, evalDateStr)
             if (price !== null) {
               const fxPair = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
-              const fxRate = fxPair ? (lookupClose(fxPair, dateStr) ?? p.tauxActuelCHF) : 1
+              const fxRate = fxPair ? (lookupClose(fxPair, evalDateStr) ?? p.tauxActuelCHF) : 1
               return { price, fxRate }
             }
             // Date is before history window: use oldest history price (avoids rate-limiting Yahoo)
@@ -1067,12 +1152,12 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
               return { price: price0, fxRate: fxRate0 }
             }
           }
-          const d = await fetchPriceCached(p.ticker, p.devise, isToday ? undefined : dateStr)
+          const d = await fetchPriceCached(p.ticker, p.devise, isToday ? undefined : evalDateStr)
           return d ?? { price: p.prixActuel, fxRate: p.tauxActuelCHF }
         }))
 
         let nominal = 0, reel = 0, nominalNoFX = 0, dividendes = 0
-        const dateTs = new Date(dateStr).getTime()
+        const dateTs = new Date(evalDateStr).getTime()
         for (let j = 0; j < activePosns.length; j++) {
           const p = activePosns[j]
           if (p.quantite < 0 && p.prixVente != null) {
@@ -1084,12 +1169,12 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
             const valNoFX  = p.quantite * prices[j].price * p.tauxAchatCHF
             nominal    += valCHF + p.valeurCHF
             nominalNoFX += valNoFX + Math.abs(p.quantite) * p.prixVente * p.tauxAchatCHF
-            reel       += valCHF + p.valeurCHF - p.coutCHF * inflationBetween(p.dateAchat, dateStr)
+            reel       += valCHF + p.valeurCHF - p.coutCHF * inflationBetween(p.dateAchat, evalDateStr)
             // pas de dividendes sur une position clôturée
           } else {
             const valCHF = p.quantite * prices[j].price * prices[j].fxRate
             const valNoFX = p.quantite * prices[j].price * p.tauxAchatCHF
-            const infAdj = p.coutCHF * (1 + inflationBetween(p.dateAchat, dateStr))
+            const infAdj = p.coutCHF * (1 + inflationBetween(p.dateAchat, evalDateStr))
             nominal += valCHF - p.coutCHF
             nominalNoFX += valNoFX - p.coutCHF
             reel    += valCHF - infAdj
@@ -1109,6 +1194,11 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
         // Dividendes cumulés intégrés dans nominal et réel (cohérent avec la carte Gains réalisés)
         result.push({ x: isToday ? 1 : t, nominal: nominal + dividendes, reel: reel + dividendes, nominalNoFX, dividendes, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
+      }
+      // Normaliser le premier point à 0 pour les modes mensuel et hebdomadaire
+      if ((range === 'all' || range === 'weekly') && result.length > 0) {
+        const off = { nominal: result[0].nominal, reel: result[0].reel, nominalNoFX: result[0].nominalNoFX }
+        for (const pt of result) { pt.nominal -= off.nominal; pt.reel -= off.reel; pt.nominalNoFX -= off.nominalNoFX }
       }
       if (!cancelled) { setMonthlyPts(result); setLoading(false) }
     }
@@ -1195,9 +1285,13 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
           return
         }
         const t = zP[0] + ((mx - PAD.l) / iW) * (zP[1] - zP[0])
-        let best = 0, bd = Infinity
-        points.forEach((p, i) => { const d = Math.abs(p.x - t); if (d < bd) { bd = d; best = i } })
-        setHoverIdxPnl(best); setHoverMxPnl(mx)
+        let best = -1, bd = Infinity
+        points.forEach((p, i) => {
+          if (p.x < zP[0] - 0.001 || p.x > zP[1] + 0.001) return
+          const d = Math.abs(p.x - t); if (d < bd) { bd = d; best = i }
+        })
+        if (best < 0) return
+        setHoverIdxPnl(best); setHoverMxPnl(Math.max(px(firstVisP.x), Math.min(mx, px(lastVisP.x))))
       }}
       onWheel={e => {
         e.preventDefault()
@@ -1230,7 +1324,7 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
       </defs>
       {tickVals.map((v, i) => (
         <g key={i}>
-          <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)} stroke="#DDD9D1" strokeWidth="0.5" strokeDasharray="3 3" />
+          <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)} stroke="#E2DDD6" strokeWidth="0.4" strokeDasharray="4 4" />
           <text x={PAD.l - 6} y={py(v) + 4} textAnchor="end" fontSize="10" fill="#9E9A93">
             {(() => {
               const kDec = niceStepVis >= 1000 ? 0 : niceStepVis >= 100 ? 1 : 2
@@ -1245,7 +1339,7 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
       ))}
       <g clipPath="url(#pnl-clip)">
       {zeroY >= PAD.t && zeroY <= PAD.t + iH && (
-        <line x1={PAD.l} y1={zeroY} x2={W - PAD.r} y2={zeroY} stroke="#9E9A93" strokeWidth="1" />
+        <line x1={PAD.l} y1={zeroY} x2={W - PAD.r} y2={zeroY} stroke="#6B7280" strokeWidth="1.5" opacity="0.7" />
       )}
       {showReel && (
         <>
@@ -1274,17 +1368,17 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
           {points.slice(0, -1).map((p0, i) => {
             const p1 = points[i + 1]
             const d0 = p0.nominal, d1 = p1.nominal
-            if (d0 >= 0 && d1 >= 0) return <line key={i} x1={px(p0.x)} y1={py(d0)} x2={px(p1.x)} y2={py(d1)} stroke="#2B6B5A" strokeWidth="2" strokeLinecap="round" />
-            if (d0 <= 0 && d1 <= 0) return <line key={i} x1={px(p0.x)} y1={py(d0)} x2={px(p1.x)} y2={py(d1)} stroke="#DC2626" strokeWidth="2" strokeLinecap="round" />
+            if (d0 >= 0 && d1 >= 0) return <line key={i} x1={px(p0.x)} y1={py(d0)} x2={px(p1.x)} y2={py(d1)} stroke="#2B6B5A" strokeWidth="2.5" strokeLinecap="round" />
+            if (d0 <= 0 && d1 <= 0) return <line key={i} x1={px(p0.x)} y1={py(d0)} x2={px(p1.x)} y2={py(d1)} stroke="#DC2626" strokeWidth="2.5" strokeLinecap="round" />
             const t = d0 / (d0 - d1)
             const cx = px(p0.x) + t * (px(p1.x) - px(p0.x))
             const cy = py(d0) + t * (py(d1) - py(d0))
             return <g key={i}>
-              <line x1={px(p0.x)} y1={py(d0)} x2={cx} y2={cy} stroke={d0 > 0 ? '#2B6B5A' : '#DC2626'} strokeWidth="2" strokeLinecap="round" />
-              <line x1={cx} y1={cy} x2={px(p1.x)} y2={py(d1)} stroke={d0 > 0 ? '#DC2626' : '#2B6B5A'} strokeWidth="2" strokeLinecap="round" />
+              <line x1={px(p0.x)} y1={py(d0)} x2={cx} y2={cy} stroke={d0 > 0 ? '#2B6B5A' : '#DC2626'} strokeWidth="2.5" strokeLinecap="round" />
+              <line x1={cx} y1={cy} x2={px(p1.x)} y2={py(d1)} stroke={d0 > 0 ? '#DC2626' : '#2B6B5A'} strokeWidth="2.5" strokeLinecap="round" />
             </g>
           })}
-          <circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="4" fill={points[points.length-1].nominal >= 0 ? '#2B6B5A' : '#DC2626'} />
+          <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="7" fill="none" stroke={points[points.length-1].nominal >= 0 ? '#2B6B5A' : '#DC2626'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="4" fill={points[points.length-1].nominal >= 0 ? '#2B6B5A' : '#DC2626'} /></>
         </>
       )}
       {showDividendes && (
@@ -1294,16 +1388,26 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
         />
       )}
       </g>
-      <text x={Math.max(PAD.l + 4, Math.min(W - PAD.r - 4, px(firstVisP.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{firstVisP.label}</text>
-      <text x={Math.max(PAD.l + 4, Math.min(W - PAD.r - 4, px(lastVisP.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{lastVisP === points[points.length-1] ? 'Auj.' : lastVisP.label}</text>
+      {(() => {
+        const _vp = visPtsP; const _n = _vp.length
+        const _maxL = Math.max(2, Math.min(5, Math.floor(iW / 88)))
+        const _step = Math.max(1, Math.ceil(_n / _maxL))
+        const _idxs: number[] = [0]
+        for (let _i = _step; _i < _n - 1; _i += _step) _idxs.push(_i)
+        _idxs.push(_n - 1)
+        return _idxs.map(idx => {
+          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]
+          return <text key={idx} x={Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
+        })
+      })()}
       {hoverIdxPnl !== null && (() => {
         const hov = points[hoverIdxPnl]
         const lines: {label: string; val: number; col: string}[] = []
         if (showNominal) lines.push({ label: 'Nominal', val: hov.nominal, col: hov.nominal >= 0 ? '#4ADE80' : '#F87171' })
         if (showReel) lines.push({ label: 'Réel', val: hov.reel, col: hov.reel >= 0 ? '#6BB8E0' : '#F87171' })
         if (showDividendes) lines.push({ label: 'Dividendes', val: hov.dividendes, col: '#F59E0B' })
-        const bh = 18 + lines.length * 16
-        const tx = Math.min(Math.max(px(hov.x), PAD.l + 58), W - PAD.r - 58)
+        const bh = 20 + lines.length * 16
+        const tx = Math.min(Math.max(px(hov.x), PAD.l + 69), W - PAD.r - 69)
         const refV = showNominal ? hov.nominal : showReel ? hov.reel : 0
         const ty = Math.max(PAD.t + bh + 4, py(refV) - 10)
         return (
@@ -1313,12 +1417,12 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
             {showReel && <circle cx={px(hov.x)} cy={py(hov.reel)} r="3" fill={hov.reel >= 0 ? '#1B5C80' : '#DC2626'} />}
             {showDividendes && hov.dividendes > 0 && <circle cx={px(hov.x)} cy={py(hov.dividendes)} r="3" fill="#F59E0B" />}
             <g transform={`translate(${tx},${ty})`}>
-              <rect x="-58" y={-bh} width="116" height={bh + 4} rx="4" fill="#1C2B22" opacity="0.92" />
-              <text x="0" y={-(bh - 12)} textAnchor="middle" fontSize="10" fill="#9E9A93">{hov.label}</text>
+              <rect x="-69" y={-bh} width="138" height={bh + 6} rx="5" fill="#1A2920" stroke="#2D4A38" strokeWidth="0.6" opacity="0.96" />
+              <text x="0" y={-(bh - 13)} textAnchor="middle" fontSize="10" fontWeight="500" fill="#B8B3AB">{hov.label}</text>
               {lines.map((l, i) => (
                 <g key={i}>
-                  <text x="-4" y={-(bh - 12) + 14 + i * 16} textAnchor="end" fontSize="10" fill="#9E9A93">{l.label}</text>
-                  <text x="4" y={-(bh - 12) + 14 + i * 16} textAnchor="start" fontSize="10" fill={l.col}>{l.val >= 0 ? '+' : ''}{Math.abs(l.val) >= 1000 ? `${(l.val/1000).toFixed(1)}k` : l.val.toFixed(0)} CHF</text>
+                  <text x="-6" y={-(bh - 13) + 15 + i * 16} textAnchor="end" fontSize="10" fill="#7A766F">{l.label}</text>
+                  <text x="6" y={-(bh - 13) + 15 + i * 16} textAnchor="start" fontSize="11" fontWeight="600" fill={l.col}>{l.val >= 0 ? '+' : ''}{Math.abs(l.val) >= 1000 ? `${(l.val/1000).toFixed(1)}k` : l.val.toFixed(0)} CHF</text>
                 </g>
               ))}
             </g>
@@ -1346,7 +1450,7 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
 
 // ─── Chart: Drawdown ─────────────────────────────────────────────────────────
 function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey = 0 }: { data: PositionCalc[]; onMaxDrawdown?: (pct: number, date: string) => void; range?: 'all' | '60d' | 'weekly'; dateFrom?: string; dateTo?: string; bustKey?: number }) {
-  const W = 600, H = 180, PAD = { t: 16, r: 16, b: 36, l: 56 }
+  const W = 600, H = 195, PAD = { t: 16, r: 16, b: 40, l: 64 }
   const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
 
   const [ddPts, setDdPts] = useState<{ x: number; dd: number; label: string }[] | null>(null)
@@ -1376,18 +1480,30 @@ function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey =
     const first = new Date(sorted[0].dateAchat)
     const ms = today.getTime() - first.getTime()
     if (range === 'weekly') {
+      // Partir du lundi de la semaine contenant le premier achat
+      const [fy, fm, fd] = sorted[0].dateAchat.split('-').map(Number)
+      const firstLocal = new Date(fy, fm - 1, fd)
+      const dow = firstLocal.getDay() // 0=dim, 1=lun, ..., 6=sam
+      const daysToMon = dow === 0 ? 6 : dow - 1
+      const startMonday = new Date(firstLocal)
+      startMonday.setDate(firstLocal.getDate() - daysToMon)
       const list: string[] = []
-      let d = new Date(first)
+      let d = new Date(startMonday)
       while (d <= today) {
-        list.push(d.toISOString().slice(0, 10))
+        list.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
         d = new Date(d); d.setDate(d.getDate() + 7)
       }
-      return { dates: list, firstDate: first, totalMs: ms || 1 }
+      return { dates: list, firstDate: startMonday, totalMs: (today.getTime() - startMonday.getTime()) || 1 }
     }
+    // Partir du mois du premier achat
     const list: string[] = []
-    let d = new Date(first.getFullYear(), first.getMonth(), 1)
-    while (d <= today) { list.push(d.toISOString().slice(0, 10)); d = new Date(d.getFullYear(), d.getMonth() + 1, 1) }
-    return { dates: list, firstDate: first, totalMs: ms || 1 }
+    let dYear = first.getFullYear(), dMonth = first.getMonth()
+    const todayYM = today.getFullYear() * 12 + today.getMonth()
+    while (dYear * 12 + dMonth <= todayYM) {
+      list.push(`${dYear}-${String(dMonth + 1).padStart(2, '0')}-01`)
+      dMonth++; if (dMonth > 11) { dMonth = 0; dYear++ }
+    }
+    return { dates: list, firstDate: new Date(first.getFullYear(), first.getMonth(), 1), totalMs: ms || 1 }
   }, [data, range, dateFrom, dateTo])
 
   const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + (dateFrom ?? '') + '|' + (dateTo ?? '') + '|' + bustKey, [data, range, dateFrom, dateTo, bustKey])
@@ -1507,32 +1623,111 @@ function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey =
           const wUnitV = wPortfolioV / totalUnits
           if (wUnitV > peakUnitV) peakUnitV = wUnitV
         }
+      } else if (range === '60d' && !dateFrom && dates.length > 0) {
+        // ─── Préchauffage VLU pour vue 60j ───────────────────────────────
+        // On reconstitue l'état VLU depuis le premier achat jusqu'à la veille
+        // du premier point affiché, pour que le drawdown parte de son vrai niveau
+        // (et non de 0) même quand le portefeuille a une historique plus longue.
+        const minDateAchat60 = longLots.reduce((m, p) => p.dateAchat < m ? p.dateAchat : m, '9999-99-99')
+        const startStr60 = dates[0]
+        if (minDateAchat60 < startStr60) {
+          let wdCur60 = new Date(minDateAchat60)
+          const wdEnd60 = new Date(startStr60)
+          while (wdCur60 < wdEnd60) {
+            if (cancelled) return
+            const wDate = wdCur60.toISOString().slice(0, 10)
+            wdCur60.setDate(wdCur60.getDate() + 1)
+            const wActiveLong = longLots.filter(p =>
+              p.dateAchat <= wDate && (!p.dateVente || p.dateVente > wDate)
+            )
+            if (wActiveLong.length === 0) {
+              while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= wDate) cfIdx++
+              continue
+            }
+            const wAllHaveData = wActiveLong.every(p => lookupClose(p.ticker, wDate) !== null)
+            if (!wAllHaveData) continue
+            let netCf = 0
+            while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= wDate) {
+              const cf = cfEvents[cfIdx++]
+              netCf += cf.type === 'buy' ? cf.amount : -cf.amount
+            }
+            const uniqueW = [...new Set(wActiveLong.map(p => p.ticker.toUpperCase()))]
+            const wPriceMap = new Map<string, { price: number; fxRate: number }>()
+            for (const tk of uniqueW) {
+              const lot = wActiveLong.find(p => p.ticker.toUpperCase() === tk)!
+              const price = lookupClose(tk, wDate)!
+              const fxPair = lot.devise !== 'CHF' ? `${lot.devise}CHF=X` : null
+              const fxRate = fxPair ? (lookupClose(fxPair, wDate) ?? lot.tauxActuelCHF) : 1
+              wPriceMap.set(tk, { price, fxRate })
+            }
+            const wNetQty = new Map<string, number>()
+            for (const p of wActiveLong) {
+              const tk = p.ticker.toUpperCase()
+              wNetQty.set(tk, (wNetQty.get(tk) ?? 0) + p.quantite)
+            }
+            for (const p of allDeltaLots) {
+              if (p.dateAchat <= wDate) {
+                const tk = p.ticker.toUpperCase()
+                wNetQty.set(tk, (wNetQty.get(tk) ?? 0) + p.quantite)
+              }
+            }
+            let wPortfolioV = 0
+            for (const [tk, netQty] of wNetQty) {
+              if (netQty <= 0) continue
+              const pr = wPriceMap.get(tk)
+              if (!pr) continue
+              wPortfolioV += netQty * pr.price * pr.fxRate
+            }
+            if (wPortfolioV <= 0) { prevPortfolioV = 0; continue }
+            if (totalUnits === 0) {
+              totalUnits = INITIAL_UNITS
+            } else if (netCf !== 0) {
+              const prevUnitV = prevPortfolioV > 0 ? prevPortfolioV / totalUnits : wPortfolioV / INITIAL_UNITS
+              if (prevUnitV > 0) totalUnits += netCf / prevUnitV
+              if (totalUnits <= 0) totalUnits = INITIAL_UNITS
+            }
+            prevPortfolioV = wPortfolioV
+            const wUnitV60 = wPortfolioV / totalUnits
+            if (wUnitV60 > peakUnitV) peakUnitV = wUnitV60
+          }
+        }
       }
 
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
         const dateStr = dates[i]
-        const isToday = dateStr >= today
+        // Évaluer au dernier jour du mois (mensuel) ou dimanche (hebdo) — même logique qu'EvolChart/PnLChart
+        const evalDateStr = range === 'weekly' ? (() => {
+          const sun = new Date(dateStr); sun.setDate(sun.getDate() + 6)
+          const s = `${sun.getFullYear()}-${String(sun.getMonth() + 1).padStart(2, '0')}-${String(sun.getDate()).padStart(2, '0')}`
+          return s <= today ? s : today
+        })() : range === 'all' ? (() => {
+          const [dy, dm] = dateStr.split('-').map(Number)
+          const lastDay = new Date(dy, dm, 0) // dernier jour du mois en heure locale
+          const s = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
+          return s <= today ? s : today
+        })() : dateStr
+        const isToday = evalDateStr >= today
 
         // Long lots actifs à cette date (achetés et pas encore vendus)
         const activeLong = longLots.filter(p =>
-          p.dateAchat <= dateStr && (!p.dateVente || p.dateVente > dateStr)
+          p.dateAchat <= evalDateStr && (!p.dateVente || p.dateVente > evalDateStr)
         )
         if (activeLong.length === 0) {
           // Avancer cfIdx même si aucun lot actif (flux sans position = edge case)
-          while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= dateStr) cfIdx++
+          while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= evalDateStr) cfIdx++
           continue
         }
 
         // Vérifier disponibilité des données avant de consommer les flux
         if (!isToday) {
-          const allHaveData = activeLong.every(p => lookupClose(p.ticker, dateStr) !== null)
+          const allHaveData = activeLong.every(p => lookupClose(p.ticker, evalDateStr) !== null)
           if (!allHaveData) continue // ne pas avancer cfIdx : les flux seront agrégés à la prochaine date valide
         }
 
-        // Consommer les flux de capital entre la dernière date traitée et dateStr
+        // Consommer les flux de capital entre la dernière date traitée et evalDateStr
         let netCf = 0
-        while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= dateStr) {
+        while (cfIdx < cfEvents.length && cfEvents[cfIdx].date <= evalDateStr) {
           const cf = cfEvents[cfIdx++]
           netCf += cf.type === 'buy' ? cf.amount : -cf.amount
         }
@@ -1543,9 +1738,9 @@ function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey =
         await Promise.all(uniqueTickers.map(async tk => {
           const lot = activeLong.find(p => p.ticker.toUpperCase() === tk)!
           if (!isToday) {
-            const price = lookupClose(tk, dateStr)!
+            const price = lookupClose(tk, evalDateStr)!
             const fxPair = lot.devise !== 'CHF' ? `${lot.devise}CHF=X` : null
-            const fxRate = fxPair ? (lookupClose(fxPair, dateStr) ?? lot.tauxActuelCHF) : 1
+            const fxRate = fxPair ? (lookupClose(fxPair, evalDateStr) ?? lot.tauxActuelCHF) : 1
             tickerPriceMap.set(tk, { price, fxRate })
           } else {
             const d = await fetchPriceCached(lot.ticker, lot.devise, undefined)
@@ -1560,7 +1755,7 @@ function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey =
           netQtyByTicker.set(tk, (netQtyByTicker.get(tk) ?? 0) + p.quantite)
         }
         for (const p of allDeltaLots) {
-          if (p.dateAchat <= dateStr) {
+          if (p.dateAchat <= evalDateStr) {
             const tk = p.ticker.toUpperCase()
             netQtyByTicker.set(tk, (netQtyByTicker.get(tk) ?? 0) + p.quantite) // p.quantite < 0
           }
@@ -1661,9 +1856,13 @@ function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey =
           return
         }
         const t = zD[0] + ((mx - PAD.l) / iW) * (zD[1] - zD[0])
-        let best = 0, bd = Infinity
-        points.forEach((p, i) => { const d = Math.abs(p.x - t); if (d < bd) { bd = d; best = i } })
-        setHoverIdx(best); setHoverMxDd(mx)
+        let best = -1, bd = Infinity
+        points.forEach((p, i) => {
+          if (p.x < zD[0] - 0.001 || p.x > zD[1] + 0.001) return
+          const d = Math.abs(p.x - t); if (d < bd) { bd = d; best = i }
+        })
+        if (best < 0) return
+        setHoverIdx(best); setHoverMxDd(Math.max(px(firstVisD.x), Math.min(mx, px(lastVisD.x))))
       }}
       onWheel={e => {
         e.preventDefault()
@@ -1679,42 +1878,52 @@ function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey =
       <defs>
         <clipPath id="dd-clip"><rect x={PAD.l} y={PAD.t} width={iW} height={iH} /></clipPath>
         <linearGradient id="dd-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#DC2626" stopOpacity="0.30" />
-          <stop offset="100%" stopColor="#DC2626" stopOpacity="0.04" />
+          <stop offset="0%" stopColor="#DC2626" stopOpacity="0.36" />
+          <stop offset="100%" stopColor="#DC2626" stopOpacity="0.02" />
         </linearGradient>
       </defs>
       {tickVals.map((v, i) => (
         <g key={i}>
-          <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)} stroke="#DDD9D1" strokeWidth="0.5" strokeDasharray="3 3" />
-          <text x={PAD.l - 4} y={py(v) + 4} textAnchor="end" fontSize="10" fill="#9E9A93">{v.toFixed(0)}%</text>
+          <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)} stroke="#E2DDD6" strokeWidth="0.4" strokeDasharray="4 4" />
+          <text x={PAD.l - 4} y={py(v) + 4} textAnchor="end" fontSize="10" fill="#9E9A93">{v === 0 ? '0%' : `${v.toFixed(1)}%`}</text>
         </g>
       ))}
       <g clipPath="url(#dd-clip)">
-      <line x1={PAD.l} y1={zeroY} x2={W - PAD.r} y2={zeroY} stroke="#9E9A93" strokeWidth="0.8" />
+      <line x1={PAD.l} y1={zeroY} x2={W - PAD.r} y2={zeroY} stroke="#6B7280" strokeWidth="1.2" opacity="0.75" />
       <path d={areaPath} fill="url(#dd-fill)" />
-      <path d={points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${px(p.x)} ${py(p.dd)}`).join(' ')} fill="none" stroke="#DC2626" strokeWidth="1.5" />
+      <path d={points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${px(p.x)} ${py(p.dd)}`).join(' ')} fill="none" stroke="#DC2626" strokeWidth="2" />
       <circle cx={px(maxDDPt.x)} cy={py(maxDDPt.dd)} r="3.5" fill="#DC2626" />
       {hovered && (
         <g>
           <line x1={hoverMxDd ?? px(hovered.x)} y1={PAD.t} x2={hoverMxDd ?? px(hovered.x)} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
           <circle cx={px(hovered.x)} cy={py(hovered.dd)} r="3" fill="#DC2626" />
           {(() => {
-            const tx = Math.min(Math.max(px(hovered.x), PAD.l + 58), W - PAD.r - 58)
+            const tx = Math.min(Math.max(px(hovered.x), PAD.l + 62), W - PAD.r - 62)
             const below = py(hovered.dd) + 20 < H - PAD.b - 20
             const ty = below ? py(hovered.dd) + 12 : py(hovered.dd) - 36
             return (
               <g transform={`translate(${tx}, ${ty})`}>
-                <rect x="-55" y="-4" width="110" height="30" rx="4" fill="#2A1515" opacity="0.92" />
-                <text x="0" y="8" textAnchor="middle" fontSize="10" fill="#9E9A93">{hovered.label}</text>
-                <text x="0" y="20" textAnchor="middle" fontSize="10" fill="#F87171" fontWeight="600">{hovered.dd.toFixed(2)}%</text>
+                <rect x="-62" y="-6" width="124" height="36" rx="5" fill="#221010" stroke="#5A2020" strokeWidth="0.6" opacity="0.96" />
+                <text x="0" y="8" textAnchor="middle" fontSize="10" fontWeight="500" fill="#B8AEA8">{hovered.label}</text>
+                <text x="0" y="22" textAnchor="middle" fontSize="12" fontWeight="700" fill="#F87171">{hovered.dd.toFixed(2)}%</text>
               </g>
             )
           })()}
         </g>
       )}
       </g>
-      <text x={Math.max(PAD.l + 4, Math.min(W - PAD.r - 4, px(firstVisD.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{firstVisD.label}</text>
-      <text x={Math.max(PAD.l + 4, Math.min(W - PAD.r - 4, px(lastVisD.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{lastVisD === points[points.length-1] ? 'Auj.' : lastVisD.label}</text>
+      {(() => {
+        const _vp = visPtsD; const _n = _vp.length
+        const _maxL = Math.max(2, Math.min(5, Math.floor(iW / 88)))
+        const _step = Math.max(1, Math.ceil(_n / _maxL))
+        const _idxs: number[] = [0]
+        for (let _i = _step; _i < _n - 1; _i += _step) _idxs.push(_i)
+        _idxs.push(_n - 1)
+        return _idxs.map(idx => {
+          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]
+          return <text key={idx} x={Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
+        })
+      })()}
 
     </svg>
     <div style={{ height: 32 }} />
@@ -1940,6 +2149,7 @@ function InvestorProfileSection({
   const [tip, setTip] = React.useState<string | null>(null)
   const [expandedFrontierTickers, setExpandedFrontierTickers] = React.useState<Set<string>>(new Set())
   const [showFX, setShowFX] = React.useState(false)
+  const [longMode, setLongMode] = React.useState(false)
 
   // ── Positions ouvertes nettes (FIFO) — même logique que l'onglet Positions ──
   // Exclut les positions clôturées (dateVente) et tient compte des réductions
@@ -1996,6 +2206,7 @@ function InvestorProfileSection({
     frontierPtsFX: { r: number; s: number; sh: number }[]
     realStress: { label: string; loss: number; isReal: boolean; coveredPct: number; peakDate: string; troughDate: string }[]
     maxDrawdown: number  // valeur négative, ex. -0.35 = drawdown max de 35 %
+    isMonthly: boolean   // true = données mensuelles (historique max), false = journalier (10 ans)
   } | null>(null)
   const [histLoading, setHistLoading] = React.useState(false)
 
@@ -2011,8 +2222,9 @@ function InvestorProfileSection({
     fetchHistory(allTickersHist)
       .then((raw: Record<string, { dates: string[]; closes: number[] }>) => {
         const today = new Date()
-        const MIN_YEARS_INCLUDE = 3    // seuil minimum : exclus des analyses si < 3 ans
-        const MAX_YEARS_WINDOW  = 10   // fenêtre cible : on ne remonte pas au-delà de 10 ans
+        const MIN_YEARS_INCLUDE = longMode ? 10 : 3  // mensuel : exclure si < 10 ans (déjà couvert par le mode journalier), journalier : < 3 ans
+        const annFactor = longMode ? 12 : 252  // 12 mois/an ou 252 jours/an
+        const MAX_YEARS_WINDOW  = longMode ? 30 : 10    // mensuel : max 30 ans, journalier : 10 ans
         const tenYearsAgo = new Date(today); tenYearsAgo.setFullYear(today.getFullYear() - MAX_YEARS_WINDOW)
         const tenYearsAgoStr = tenYearsAgo.toISOString().slice(0, 10)
 
@@ -2073,35 +2285,76 @@ function InvestorProfileSection({
           })
         }
 
+        // ── Rééchantillonnage mensuel (mode long terme) ──
+        function toMonthlyPrices(dates: string[], closes: number[]): { dates: string[]; closes: number[] } {
+          const byMonth: Record<string, { date: string; close: number }> = {}
+          for (let i = 0; i < dates.length; i++) {
+            const key = dates[i].slice(0, 7) // YYYY-MM
+            byMonth[key] = { date: dates[i], close: closes[i] } // dernier jour du mois
+          }
+          const keys = Object.keys(byMonth).sort()
+          return { dates: keys.map(k => byMonth[k].date), closes: keys.map(k => byMonth[k].close) }
+        }
+        function monthlyRets(dates: string[], closes: number[], from: string): number[] {
+          const m = toMonthlyPrices(dates, closes)
+          const fd: number[] = []
+          for (let i = 0; i < m.dates.length; i++) if (m.dates[i] >= from) fd.push(m.closes[i])
+          return fd.slice(1).map((c, i) => c / fd[i] - 1)
+        }
+        function monthlyRetsFX(dates: string[], closes: number[], fxDates: string[], fxCloses: number[], from: string): number[] {
+          const mAsset = toMonthlyPrices(dates, closes)
+          const mFX    = toMonthlyPrices(fxDates, fxCloses)
+          // Align by month key
+          const fxByMonth: Record<string, number> = {}
+          for (let i = 0; i < mFX.dates.length; i++) fxByMonth[mFX.dates[i].slice(0, 7)] = mFX.closes[i]
+          const aD: string[] = [], aC: number[] = []
+          let lastFX = 0
+          for (let i = 0; i < mAsset.dates.length; i++) {
+            if (mAsset.dates[i] >= from) {
+              const mk = mAsset.dates[i].slice(0, 7)
+              lastFX = fxByMonth[mk] ?? lastFX
+              aD.push(mAsset.dates[i]); aC.push(mAsset.closes[i])
+            }
+          }
+          const fxRates: number[] = aD.map(d => { const fx = fxByMonth[d.slice(0,7)]; return fx ?? lastFX })
+          return aD.slice(1).map((_, i) => {
+            const rAsset = aC[i+1] / aC[i] - 1
+            const rFX = fxRates[i] > 0 && fxRates[i+1] > 0 ? fxRates[i+1] / fxRates[i] - 1 : 0
+            return (1 + rAsset) * (1 + rFX) - 1
+          })
+        }
+        const getRets    = longMode ? monthlyRets    : dailyRets
+        const getRetsFX  = longMode ? monthlyRetsFX  : dailyRetsFX
+
         const inclTotal = included.reduce((s, a) => s + a.valeurCHF, 0)
         if (inclTotal <= 0) { setHistLoading(false); return }
 
         // ── Retours journaliers → E(R), σ, Sharpe, VaR/CVaR ──
         const assetRets = included.map(a => ({
-          rets: dailyRets(a.hist!.dates, a.hist!.closes, effectiveStart),
+          rets: getRets(a.hist!.dates, a.hist!.closes, effectiveStart),
           w: a.valeurCHF / inclTotal,
         }))
         let fxAssetsFound = 0
         const assetRetsFX = included.map(a => {
           const devNorm = a.devise.toUpperCase() === 'GBX' ? 'GBP' : a.devise.toUpperCase()
-          if (devNorm === 'CHF') return { rets: dailyRets(a.hist!.dates, a.hist!.closes, effectiveStart), w: a.valeurCHF / inclTotal }
+          if (devNorm === 'CHF') return { rets: getRets(a.hist!.dates, a.hist!.closes, effectiveStart), w: a.valeurCHF / inclTotal }
           const fxKey = `${devNorm}CHF=X`
           const fxHist = raw[fxKey]
           if (!fxHist) {
-            return { rets: dailyRets(a.hist!.dates, a.hist!.closes, effectiveStart), w: a.valeurCHF / inclTotal }
+            return { rets: getRets(a.hist!.dates, a.hist!.closes, effectiveStart), w: a.valeurCHF / inclTotal }
           }
           fxAssetsFound++
-          return { rets: dailyRetsFX(a.hist!.dates, a.hist!.closes, fxHist.dates, fxHist.closes, effectiveStart), w: a.valeurCHF / inclTotal }
+          return { rets: getRetsFX(a.hist!.dates, a.hist!.closes, fxHist.dates, fxHist.closes, effectiveStart), w: a.valeurCHF / inclTotal }
         })
         const minLen = Math.min(...assetRets.map(a => a.rets.length))
-        if (minLen < 60) { setHistLoading(false); return }
+        if (minLen < (longMode ? 12 : 60)) { setHistLoading(false); return }
         const portRets: number[] = []
         for (let t = 0; t < minLen; t++)
           portRets.push(assetRets.reduce((s, a) => s + a.w * (a.rets[t] ?? 0), 0))
         const mean = portRets.reduce((s, r) => s + r, 0) / portRets.length
-        const erH  = mean * 252
+        const erH  = mean * annFactor
         const varM = portRets.reduce((s, r) => s + (r - mean) ** 2, 0) / (portRets.length - 1)
-        const sigH = Math.sqrt(varM * 252)
+        const sigH = Math.sqrt(varM * annFactor)
         const curSharpe = sigH > 0 ? (erH - RF_RATE) / sigH : 0
 
         // FX-adjusted (journalier)
@@ -2110,9 +2363,9 @@ function InvestorProfileSection({
         for (let t = 0; t < minLenFX; t++)
           portRetsFX.push(assetRetsFX.reduce((s, a) => s + a.w * (a.rets[t] ?? 0), 0))
         const meanFX = portRetsFX.length > 0 ? portRetsFX.reduce((s, r) => s + r, 0) / portRetsFX.length : 0
-        const erFXH  = meanFX * 252
+        const erFXH  = meanFX * annFactor
         const varMFX = portRetsFX.length > 1 ? portRetsFX.reduce((s, r) => s + (r - meanFX) ** 2, 0) / (portRetsFX.length - 1) : 0
-        const sigFX  = Math.sqrt(varMFX * 252)
+        const sigFX  = Math.sqrt(varMFX * annFactor)
         const curSharpeFX = sigFX > 0 ? (erFXH - RF_RATE) / sigFX : 0
 
         // Per-asset stats (journaliers, cohérents avec les métriques principales)
@@ -2120,13 +2373,13 @@ function InvestorProfileSection({
           const rets = assetRets[i].rets.slice(0, minLen)
           const m = rets.length > 0 ? rets.reduce((s, r) => s + r, 0) / rets.length : 0
           const v = rets.length > 1 ? rets.reduce((s, r) => s + (r - m) ** 2, 0) / (rets.length - 1) : 0
-          return { ticker: a.ticker, nom: a.nom, wCurrent: assetRets[i].w, erAsset: m * 252, sigmaAsset: Math.sqrt(v * 252) }
+          return { ticker: a.ticker, nom: a.nom, wCurrent: assetRets[i].w, erAsset: m * annFactor, sigmaAsset: Math.sqrt(v * annFactor) }
         })
         const assetStatsFX = included.map((a, i) => {
           const rets = assetRetsFX[i].rets.slice(0, minLenFX)
           const m = rets.length > 0 ? rets.reduce((s, r) => s + r, 0) / rets.length : 0
           const v = rets.length > 1 ? rets.reduce((s, r) => s + (r - m) ** 2, 0) / (rets.length - 1) : 0
-          return { ticker: a.ticker, nom: a.nom, wCurrent: assetRetsFX[i].w, erAsset: m * 252, sigmaAsset: Math.sqrt(v * 252) }
+          return { ticker: a.ticker, nom: a.nom, wCurrent: assetRetsFX[i].w, erAsset: m * annFactor, sigmaAsset: Math.sqrt(v * annFactor) }
         })
 
         // Matrices de covariance annualisées (frontière efficiente précise)
@@ -2141,7 +2394,7 @@ function InvestorProfileSection({
             const mi = si / len, mj = sj / len
             let cov = 0
             for (let t = 0; t < len; t++) cov += (ri[t] - mi) * (rj[t] - mj)
-            return cov / (len - 1) * 252
+            return cov / (len - 1) * annFactor
           })
         )
         const covMatrixFX: number[][] = Array.from({length: nA}, (_, i) =>
@@ -2154,7 +2407,7 @@ function InvestorProfileSection({
             const mi = si / len, mj = sj / len
             let cov = 0
             for (let t = 0; t < len; t++) cov += (ri[t] - mi) * (rj[t] - mj)
-            return cov / (len - 1) * 252
+            return cov / (len - 1) * annFactor
           })
         )
 
@@ -2189,11 +2442,11 @@ function InvestorProfileSection({
           const pr = Array.from({ length: minLen }, (_, t) => assetRets.reduce((acc, a, i) => acc + w[i] * a.rets[t], 0))
           const pm = pr.reduce((a, b) => a + b, 0) / pr.length
           const pv = pr.reduce((a, r) => a + (r - pm) ** 2, 0) / (pr.length - 1)
-          const ps = Math.sqrt(pv * 252)
-          const sharpeS = ps > 0 ? (pm * 252 - RF_RATE) / ps : 0
+          const ps = Math.sqrt(pv * annFactor)
+          const sharpeS = ps > 0 ? (pm * annFactor - RF_RATE) / ps : 0
           if (sharpeS > bestSharpe) { bestSharpe = sharpeS; bestW = w }
           if (ps < bestVolSigma) { bestVolSigma = ps; minVolW = w }
-          frontierPts.push({ r: pm * 252, s: ps, sh: sharpeS })
+          frontierPts.push({ r: pm * annFactor, s: ps, sh: sharpeS })
         }
         const optWeights = assetStats.map((a, i) => ({ ...a, wOptimal: bestW[i], wMinVol: minVolW[i] }))
 
@@ -2209,11 +2462,11 @@ function InvestorProfileSection({
           const pr = Array.from({ length: minLenFX }, (_, t) => assetRetsFX.reduce((acc, a, i) => acc + w[i] * a.rets[t], 0))
           const pm = pr.reduce((a, b) => a + b, 0) / pr.length
           const pv = pr.reduce((a, r) => a + (r - pm) ** 2, 0) / (pr.length - 1)
-          const ps = Math.sqrt(pv * 252)
-          const sharpeS = ps > 0 ? (pm * 252 - RF_RATE) / ps : 0
+          const ps = Math.sqrt(pv * annFactor)
+          const sharpeS = ps > 0 ? (pm * annFactor - RF_RATE) / ps : 0
           if (sharpeS > bestSharpeFX) { bestSharpeFX = sharpeS; bestWFX = w }
           if (ps < bestVolSigmaFX) { bestVolSigmaFX = ps; minVolWFX = w }
-          frontierPtsFX.push({ r: pm * 252, s: ps, sh: sharpeS })
+          frontierPtsFX.push({ r: pm * annFactor, s: ps, sh: sharpeS })
         }
         const optWeightsFX = assetStatsFX.map((a, i) => ({ ...a, wOptimal: bestWFX[i], wMinVol: minVolWFX[i] }))
 
@@ -2263,7 +2516,7 @@ function InvestorProfileSection({
           er: erH, sigma: sigH,
           periodStart: effectiveStart,
           periodEnd: today.toISOString().slice(0, 10),
-          yearsCount: portRets.length / 252,
+          yearsCount: longMode ? portRets.length / 12 : portRets.length / 252,
           excluded: [...excluded, ...noData], reduced,
           optWeights, optSharpe: bestSharpe, optMinVolSigma: bestVolSigma, curSharpe,
           fxAssetsFound, erFX: erFXH, sigmaFX: sigFX, curSharpeFX,
@@ -2272,12 +2525,13 @@ function InvestorProfileSection({
           frontierPts, frontierPtsFX,
           realStress,
           maxDrawdown,
+          isMonthly: longMode,
         })
       })
       .catch(() => {})
       .finally(() => setHistLoading(false))
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [histKey, hasPositions])
+  }, [histKey, hasPositions, longMode])
 
   // ── Métriques finales (historiques si dispo, CAPM sinon) ──
   const er      = histStats?.er    ?? capmER
@@ -2449,34 +2703,52 @@ function InvestorProfileSection({
     if (!scoreResult) return []
     const recs: {icon: string; text: string; severity: 'high' | 'medium' | 'low'}[] = []
     const { varScore, lossScore2, shScore, drScore, retScore, varMScore, effNScore,
-            tol, varLoss, target, dr, maxDD } = scoreResult
+            tol, varLoss, target, dr, maxDD, total: scoreTotal } = scoreResult
     const h = profile.horizon
+    const actionsW = catWeights['Actions'] ?? 0
+    const obligW   = (catWeights['ETF Oblig.'] ?? 0) + (catWeights['Obligations'] ?? 0)
 
-    if (retScore <= 20)
+    // ── 0. Rendement négatif (alerte absolue avant tout) ──
+    if (er < 0)
+      recs.push({ icon: '🚨', severity: 'high',
+        text: `Rendement attendu négatif (${(er*100).toFixed(1)} %) : votre portefeuille est susceptible de perdre de la valeur en termes réels. Revoyez intégralement votre allocation.` })
+
+    // ── 1. Rendement vs objectif ──
+    else if (retScore <= 20)
       recs.push({ icon: '📉', severity: 'high',
         text: `Rendement attendu (${(er*100).toFixed(1)} %) insuffisant pour votre objectif (${(target*100).toFixed(0)} %). Envisagez des actifs plus dynamiques (actions, ETF croissance).` })
     else if (retScore <= 40)
       recs.push({ icon: '📊', severity: 'low',
         text: `Rendement en dessous de votre objectif (${(target*100).toFixed(0)} %). Une légère réorientation vers des actifs de croissance pourrait suffire.` })
 
+    // ── 2. VaR vs tolérance ──
     if (varScore === 0)
       recs.push({ icon: '⚠️', severity: 'high',
-        text: `Perte probable (VaR ${(varLoss*100).toFixed(1)} %) très supérieure à votre tolérance (${(tol*100).toFixed(0)} %). Réduisez l'exposition aux actifs volatils.` })
+        text: `Perte probable (VaR ${(varLoss*100).toFixed(1)} %, soit +${((varLoss - tol)*100).toFixed(1)} pt au-dessus de votre seuil). Réduisez l'exposition aux actifs volatils.` })
     else if (varScore <= 40)
       recs.push({ icon: '⚠️', severity: 'medium',
-        text: `Perte probable (VaR ${(varLoss*100).toFixed(1)} %) dépasse votre tolérance déclarée de ${(tol*100).toFixed(0)} %. Rééquilibrage conseillé.` })
+        text: `Perte probable (VaR ${(varLoss*100).toFixed(1)} %) dépasse votre tolérance de ${(tol*100).toFixed(0)} % (+${((varLoss - tol)*100).toFixed(1)} pt). Rééquilibrage conseillé.` })
 
+    // ── 3. Drawdown historique / CVaR ──
     if (maxDD !== null && lossScore2 <= 15)
       recs.push({ icon: '🔥', severity: 'high',
-        text: `Pire baisse historique (${(Math.abs(maxDD)*100).toFixed(1)} %) très supérieure à votre tolérance. Augmentez les actifs défensifs (obligations, or).` })
+        text: `Pire baisse historique (${(Math.abs(maxDD)*100).toFixed(1)} %) très supérieure à votre tolérance (${(tol*100).toFixed(0)} %). Augmentez les actifs défensifs (obligations, or).` })
     else if (maxDD === null && lossScore2 <= 25)
       recs.push({ icon: '🔥', severity: 'high',
         text: `En scénario de crise (CVaR), la perte potentielle est dangereuse par rapport à votre profil. Augmentez les actifs défensifs (obligations, or).` })
 
-    if (shScore <= 15)
+    // ── 4. Sharpe — texte personnalisé selon cause ──
+    if (shScore <= 15) {
+      const cause = er < 0.03
+        ? `Le rendement attendu (${(er*100).toFixed(1)} %) est trop faible. Cherchez des actifs plus rémunérateurs.`
+        : sigma > 0.25
+        ? `La volatilité (${(sigma*100).toFixed(1)} %) est trop élevée par rapport au gain. Réduisez les positions très volatiles.`
+        : `Le couple rendement/risque est sous-optimal. Consultez la Frontière efficiente pour un meilleur équilibre.`
       recs.push({ icon: '⚖️', severity: 'medium',
-        text: `Ratio de Sharpe faible (${sharpe.toFixed(2)}) : le risque pris n'est pas bien rémunéré. Cherchez des actifs à meilleur couple rendement/risque.` })
+        text: `Ratio de Sharpe faible (${sharpe.toFixed(2)}). ${cause}` })
+    }
 
+    // ── 5. Diversification / corrélations ──
     if (drScore <= 20 && h >= 10)
       recs.push({ icon: '🗂️', severity: 'high',
         text: dr !== null
@@ -2486,15 +2758,61 @@ function InvestorProfileSection({
       recs.push({ icon: '🗂️', severity: 'medium',
         text: `Diversification à améliorer pour votre horizon long (${h} ans). Les actifs restent trop corrélés entre eux.` })
 
+    // ── 6. Liquidité mensuelle ──
     if (varMScore === 0 && profile.liquidity === 'haute')
       recs.push({ icon: '💧', severity: 'high',
         text: `Volatilité mensuelle élevée incompatible avec votre besoin de liquidité haute. Augmentez la part de fonds monétaires ou d'obligations courtes.` })
+    else if (varMScore <= 25 && profile.liquidity === 'moyenne')
+      recs.push({ icon: '💧', severity: 'medium',
+        text: `Volatilité mensuelle élevée pour un besoin de liquidité à moyen terme. Envisagez une part plus importante d'obligations courtes ou de monétaire.` })
     else if (effNScore <= 20 && profile.liquidity !== 'faible')
       recs.push({ icon: '🔒', severity: 'medium',
         text: `Portefeuille concentré (N effectif ${effN.toFixed(1)}) : certains actifs peuvent être difficiles à liquider rapidement. Diversifiez ou réduisez les positions illiquides.` })
 
-    return recs.sort((a, b) => a.severity === 'high' ? -1 : b.severity === 'high' ? 1 : 0).slice(0, 4)
-  }, [scoreResult, er, sharpe, effN, hhi, profile])
+    // ── 7. Concentration extrême (N effectif < 1.5 — position quasi unique) ──
+    if (effN < 1.5)
+      recs.push({ icon: '🎯', severity: 'high',
+        text: `Portefeuille quasi mono-position (N eff. ${effN.toFixed(1)}) : la totalité de votre capital dépend d'un seul actif. Diversifiez de toute urgence.` })
+
+    // ── 8. Tout-actions sur horizon court ──
+    if (actionsW > 0.75 && h <= 5 && obligW < 0.15)
+      recs.push({ icon: '📅', severity: 'high',
+        text: `${(actionsW*100).toFixed(0)} % d'actions pour un horizon de ${h} an${h > 1 ? 's' : ''} : le risque de marché est trop élevé à court terme. Intégrez des obligations ou du monétaire (au moins 20 %).` })
+    else if (actionsW > 0.60 && h <= 3 && obligW < 0.20)
+      recs.push({ icon: '📅', severity: 'medium',
+        text: `Exposition actions élevée (${(actionsW*100).toFixed(0)} %) pour un horizon très court (${h} an${h > 1 ? 's' : ''}). Envisagez de sécuriser une partie du capital.` })
+
+    // ── 9. Profil agressif mais portefeuille trop conservateur ──
+    if ((profile.objective === 'agressif' || profile.objective === 'croissance') && sigma < 0.08 && er < target * 0.6)
+      recs.push({ icon: '🐢', severity: 'medium',
+        text: `Votre profil est ${profile.objective} mais votre portefeuille est peu volatile (${(sigma*100).toFixed(1)} %) et sous-performe votre cible (${(er*100).toFixed(1)} % vs ${(target*100).toFixed(0)} %). Vous laissez du rendement sur la table.` })
+
+    // ── 10. Mismatch horizon long / tolérance très basse ──
+    if (h >= 20 && profile.loss < 15 && actionsW < 0.3)
+      recs.push({ icon: '⏳', severity: 'low',
+        text: `Horizon de ${h} ans mais tolérance aux pertes très faible (${profile.loss} %) et peu d'actions (${(actionsW*100).toFixed(0)} %). Sur un horizon si long, la volatilité court terme est du bruit — un profil plus dynamique optimiserait votre rendement.` })
+
+    // ── 11. Risque de change significatif ──
+    if (showFX && histStats && sigma > 0 && sigmaFX > sigma * 1.15)
+      recs.push({ icon: '💱', severity: 'medium',
+        text: `Le change ajoute ${((sigmaFX - sigma)*100).toFixed(1)} pt de volatilité annuelle (${(sigma*100).toFixed(1)} % → ${(sigmaFX*100).toFixed(1)} % en CHF). Envisagez des actifs libellés en CHF ou des ETF couverts contre le change.` })
+
+    // ── 12. Monte Carlo : risque de perte à l'horizon déclaré ──
+    const mcIdx = Math.min(h * 12, mcBands.length - 1)
+    if (mcBands.length > 0 && mcIdx > 0 && mcBands[mcIdx].p5 < 1.0)
+      recs.push({ icon: '🎲', severity: 'medium',
+        text: `Dans 5 % des scénarios Monte Carlo, votre portefeuille vaut moins que la mise initiale à l'horizon de ${h} an${h > 1 ? 's' : ''} (×${mcBands[mcIdx].p5.toFixed(2)}). Ce risque de perte nette mérite attention.` })
+
+    // ── 13. Encouragement si portefeuille bien calibré ──
+    if (scoreTotal >= 80 && recs.length === 0)
+      recs.push({ icon: '✅', severity: 'low',
+        text: `Votre portefeuille est bien calibré par rapport à votre profil (score ${scoreTotal}/100). Continuez à surveiller votre allocation et à rééquilibrer annuellement.` })
+
+    return recs.sort((a, b) => {
+      const rank = (s: string) => s === 'high' ? 0 : s === 'medium' ? 1 : 2
+      return rank(a.severity) - rank(b.severity)
+    }).slice(0, 6)
+  }, [scoreResult, er, sigma, sigmaFX, sharpe, effN, hhi, catWeights, profile, showFX, histStats, mcBands])
 
   // ── Frontière efficiente ──
   const frontier = React.useMemo(() => {
@@ -2701,13 +3019,20 @@ function InvestorProfileSection({
                 </button>
               ))}
             </div>
-            {histStats && (
-              <button onClick={() => setShowFX(v => !v)}
-                title={showFX ? 'Afficher en devise locale' : 'Afficher en CHF (FX inclus)'}
-                className={`mx-3 px-2.5 py-1 rounded-lg border text-base transition-all flex-shrink-0 ${showFX ? 'border-[#B5820F] bg-[#FEF3C7] dark:bg-[#2a2010]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-50 hover:opacity-100'}`}>
-                🇨🇭
+            <div className="flex items-center flex-shrink-0 gap-1 mx-3">
+              {histStats && (
+                <button onClick={() => setShowFX(v => !v)}
+                  title={showFX ? 'Afficher en devise locale' : 'Afficher en CHF (FX inclus)'}
+                  className={`px-2.5 py-1 rounded-lg border text-base transition-all ${showFX ? 'border-[#B5820F] bg-[#FEF3C7] dark:bg-[#2a2010]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-50 hover:opacity-100'}`}>
+                  🇨🇭
+                </button>
+              )}
+              <button onClick={() => setLongMode(v => !v)}
+                title={longMode ? 'Mode journalier (10 ans)' : 'Mode mensuel (historique maximum)'}
+                className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${longMode ? 'border-[#2B6B5A] bg-[#E8F5F1] dark:bg-[#0d2e24] text-[#2B6B5A] dark:text-[#5EC9A5]' : 'border-[#DDD9D1] dark:border-[#2a3f52] text-[#8899AA] opacity-50 hover:opacity-100'}`}>
+                📅 max
               </button>
-            )}
+            </div>
           </div>
 
           <div className="p-6">
@@ -2719,7 +3044,7 @@ function InvestorProfileSection({
                   {histLoading
                     ? '⏳ Chargement des données historiques…'
                     : histStats
-                    ? `📈 Basé sur les cours réels de vos actifs entre ${histStats.periodStart.slice(0,7)} et ${histStats.periodEnd.slice(0,7)} (${histStats.yearsCount.toFixed(1)} ans de données)`
+                    ? `📈 Basé sur les cours réels de vos actifs entre ${histStats.periodStart.slice(0,7)} et ${histStats.periodEnd.slice(0,7)} (${histStats.yearsCount.toFixed(1)} ans · données ${histStats.isMonthly ? "mensuelles" : "journalières"})`
                     : '⚠️ Estimations CAPM (données historiques indisponibles — β par catégorie, matrice de corrélation 6×6)'}
                 </p>
                 {(() => {
@@ -2736,15 +3061,15 @@ function InvestorProfileSection({
                         'Rendement annuel attendu',
                         `${(erD * 100).toFixed(2)} %`,
                         inCHF
-                          ? `Gain moyen annuel sur la période analysée, en CHF. Historique — les années futures peuvent différer. · Formule : moyenne des rendements journaliers × 252, converti en CHF`
-                          : `Gain moyen annuel sur la période analysée. Historique — les années futures peuvent différer. · Formule : moyenne des rendements journaliers × 252`,
+                          ? `Gain moyen annuel sur la période analysée, en CHF. Historique — les années futures peuvent différer. · Formule : moyenne des rendements ${histStats?.isMonthly ? 'mensuels × 12' : 'journaliers × 252'}, converti en CHF`
+                          : `Gain moyen annuel sur la période analysée. Historique — les années futures peuvent différer. · Formule : moyenne des rendements ${histStats?.isMonthly ? 'mensuels × 12' : 'journaliers × 252'}`,
                         '#2B6B5A'
                       )}
                       {tile(
                         'Volatilité annuelle',
                         `${(sigD * 100).toFixed(2)} %`,
                         inCHF
-                          ? `Amplitude des variations annuelles de votre portefeuille, en CHF. Plus c'est élevé, plus les hausses et baisses sont fortes. · Formule : σ journalière × √252, converti en CHF`
+                          ? `Amplitude des variations annuelles de votre portefeuille, en CHF. Plus c'est élevé, plus les hausses et baisses sont fortes. · Formule : σ ${histStats?.isMonthly ? 'mensuelle × √12' : 'journalière × √252'}, converti en CHF`
                           : `Amplitude des variations annuelles de votre portefeuille. Plus c'est élevé, plus les hausses et baisses sont fortes. · Formule : σ journalière × √252`
                       )}
                       {tile(
@@ -2803,17 +3128,28 @@ function InvestorProfileSection({
 
                 {/* ── Recommandations ── */}
                 {recommendations.length > 0 && (
-                  <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-4 space-y-3">
-                    <p className="text-xs font-semibold text-[#1B3050] dark:text-white uppercase tracking-wide">Recommandations</p>
+                  <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] overflow-hidden">
+                    <div className="px-4 py-3 border-b border-[#F5F3EF] dark:border-[#1e3347] flex items-center justify-between">
+                      <p className="text-xs font-semibold text-[#1B3050] dark:text-white uppercase tracking-wide">Recommandations</p>
+                      <span className="text-[10px] text-[#9E9A93]">{recommendations.filter(r => r.severity === 'high').length > 0 && <span className="text-red-500 font-semibold">{recommendations.filter(r => r.severity === 'high').length} critique{recommendations.filter(r => r.severity === 'high').length > 1 ? 's' : ''}</span>}</span>
+                    </div>
+                    <div className="divide-y divide-[#F5F3EF] dark:divide-[#1e3347]">
                     {recommendations.map((r, i) => (
-                      <div key={i} className="flex gap-3 items-start">
-                        <div className="flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-sm"
+                      <div key={i} className="flex items-start gap-3 px-4 py-3" style={{ borderLeft: `3px solid ${r.severity === 'high' ? '#EF4444' : r.severity === 'medium' ? '#F59E0B' : '#22C55E'}` }}>
+                        <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm mt-0.5"
                           style={{ background: r.severity === 'high' ? '#FEE2E2' : r.severity === 'medium' ? '#FEF3C7' : '#DCFCE7' }}>
                           {r.icon}
                         </div>
-                        <p className="text-xs text-[#3D4F62] dark:text-[#A8BBCC] leading-relaxed">{r.text}</p>
+                        <div className="flex-1 min-w-0">
+                          <span className="inline-block text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded mb-1 mr-1"
+                            style={{ background: r.severity === 'high' ? '#FEE2E2' : r.severity === 'medium' ? '#FEF3C7' : '#DCFCE7', color: r.severity === 'high' ? '#B91C1C' : r.severity === 'medium' ? '#92400E' : '#15803D' }}>
+                            {r.severity === 'high' ? 'Critique' : r.severity === 'medium' ? 'Attention' : 'Info'}
+                          </span>
+                          <p className="text-xs text-[#3D4F62] dark:text-[#A8BBCC] leading-relaxed">{r.text}</p>
+                        </div>
                       </div>
                     ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -2997,6 +3333,27 @@ function InvestorProfileSection({
 
                 {histStats && (
                   <>
+                    {/* Boutons — légende */}
+                    <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-4 space-y-3">
+                      <p className="text-xs font-semibold text-[#1B3050] dark:text-white uppercase tracking-wide">Contrôles de l'analyse</p>
+                      <div className="space-y-2.5">
+                        <div className="flex items-start gap-3">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded border text-base flex-shrink-0 mt-0.5 ${showFX ? 'border-[#B5820F] bg-[#FEF3C7] dark:bg-[#2a2010]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-60'}`}>🇨🇭</span>
+                          <div>
+                            <p className="text-xs font-medium text-[#1B3050] dark:text-white">Ajustement CHF</p>
+                            <p className="text-xs text-[#5C6880] dark:text-[#7B8DA6]">Convertit tous les rendements en francs suisses en intégrant les variations de change. Utile si vos actifs sont libellés en USD, EUR ou GBP — vous voyez ce que le portefeuille rapporte réellement en CHF, change inclus.</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-semibold flex-shrink-0 mt-0.5 ${longMode ? 'border-[#2B6B5A] bg-[#E8F5F1] dark:bg-[#0d2e24] text-[#2B6B5A] dark:text-[#5EC9A5]' : 'border-[#DDD9D1] dark:border-[#2a3f52] text-[#8899AA] opacity-60'}`}>📅 max</span>
+                          <div>
+                            <p className="text-xs font-medium text-[#1B3050] dark:text-white">Historique long (jusqu'à 30 ans)</p>
+                            <p className="text-xs text-[#5C6880] dark:text-[#7B8DA6]">Passe en données <strong className="text-[#1B3050] dark:text-white">mensuelles</strong> sur un maximum de 30 ans d'historique au lieu des 10 ans journaliers. Plus adapté pour mesurer le comportement long terme et les cycles économiques complets. Seuls les actifs avec au moins 10 ans d'historique sont inclus — les autres sont déjà couverts par le mode journalier.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
                     {/* Méthodologie en premier */}
                     <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-4 space-y-2">
                       <p className="text-xs font-semibold text-[#1B3050] dark:text-white uppercase tracking-wide">Comment ces chiffres sont calculés</p>
@@ -3009,11 +3366,11 @@ function InvestorProfileSection({
                         <strong className="text-[#1B3050] dark:text-white">
                           {new Date(histStats.periodEnd).toLocaleDateString('fr-CH', { month: 'long', year: 'numeric' })}
                         </strong>
-                        {' '}({histStats.yearsCount.toFixed(1)} ans), fournis par Yahoo Finance et ajustés pour les dividendes et les divisions d&apos;actions. On mesure chaque jour la variation de valeur du portefeuille en appliquant vos proportions actuelles sur toute cette période — comme si vous aviez toujours détenu ces actifs dans ces mêmes proportions. Le rendement annuel et le risque sont ensuite calculés à partir de ces variations journalières.
+                        {' '}({histStats.yearsCount.toFixed(1)} ans), fournis par Yahoo Finance et ajustés pour les dividendes et les divisions d&apos;actions. {histStats.isMonthly ? 'On mesure chaque mois la variation de valeur du portefeuille en appliquant vos proportions actuelles sur toute cette période — comme si vous aviez toujours détenu ces actifs dans ces mêmes proportions. Le rendement annuel et le risque sont ensuite calculés à partir de ces variations mensuelles.' : 'On mesure chaque jour la variation de valeur du portefeuille en appliquant vos proportions actuelles sur toute cette période — comme si vous aviez toujours détenu ces actifs dans ces mêmes proportions. Le rendement annuel et le risque sont ensuite calculés à partir de ces variations journalières.'}
                       </p>
                       <div className="space-y-1 text-xs text-[#8899AA] pt-1 border-t border-[#F5F3EF] dark:border-[#1e3347]">
-                        <p>· E(Rp) = moyenne des rendements journaliers × 252 (nombre de jours de bourse par an)</p>
-                        <p>· σ = écart-type des rendements journaliers × √252 (annualisé)</p>
+                        <p>· E(Rp) = moyenne des rendements {histStats?.isMonthly ? 'mensuels × 12 (mois par an)' : 'journaliers × 252 (jours de bourse par an)'}</p>
+                        <p>· σ = écart-type des rendements {histStats?.isMonthly ? 'mensuels × √12 (annualisé)' : 'journaliers × √252 (annualisé)'}</p>
                         <p>· VaR et CVaR paramétriques (loi normale, 95 %)</p>
                       </div>
                     </div>
@@ -3055,7 +3412,7 @@ function InvestorProfileSection({
                             ))}
                           </div>
                           <p className="text-xs text-[#8899AA] border-t border-[#F5F3EF] dark:border-[#1e3347] pt-2">
-                            <strong>Inclus</strong> = pris en compte dans toutes les statistiques. <strong>Réduit</strong> = inclus mais avec moins d&apos;historique, ce qui raccourcit la période d&apos;analyse commune. <strong>Exclu</strong> = moins de 3 ans de données, non pris en compte (son poids est redistribué aux autres actifs).
+                            <strong>Inclus</strong> = pris en compte dans toutes les statistiques. <strong>Réduit</strong> = inclus mais avec moins d&apos;historique, ce qui raccourcit la période d&apos;analyse commune. <strong>Exclu</strong> = moins de {longMode ? '10' : '3'} ans de données, non pris en compte en mode {longMode ? 'mensuel' : 'journalier'} (son poids est redistribué aux autres actifs).
                           </p>
                         </div>
                       )
@@ -3073,6 +3430,422 @@ function InvestorProfileSection({
 
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
+
+
+function FormDatePicker({ value, onChange, min, max }: {
+  value: string; onChange: (v: string) => void; min?: string; max?: string
+}) {
+  const [open, setOpen] = React.useState(false)
+  const [pickerMode, setPickerMode] = React.useState<null | 'month' | 'year'>(null)
+  // Timezone-safe: on construit la chaîne depuis les composantes locales,
+  // new Date(y,m,d).toISOString() donnerait le jour précédent en UTC+2.
+  const localDateStr = (y: number, m: number, d: number) =>
+    `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+  const todayLocal = new Date()
+  const todayStr = localDateStr(todayLocal.getFullYear(), todayLocal.getMonth(), todayLocal.getDate())
+  const maxStr = max || todayStr
+  const maxYear = parseInt(maxStr.slice(0,4))
+  const parseDate = (s: string) => s ? { y: parseInt(s.slice(0,4)), m: parseInt(s.slice(5,7))-1 } : { y: todayLocal.getFullYear(), m: todayLocal.getMonth() }
+  const [viewYear, setViewYear] = React.useState(() => parseDate(value).y)
+  const [viewMonth, setViewMonth] = React.useState(() => parseDate(value).m)
+  const [yearPage, setYearPage] = React.useState(() => Math.floor(parseDate(value).y / 12) * 12)
+  const ref = React.useRef<HTMLDivElement>(null)
+  React.useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); setPickerMode(null) }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
+  const startOffset = (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7
+  const cellDate = (day: number) => localDateStr(viewYear, viewMonth, day)
+  const isDisabled = (ds: string) => ds > maxStr || !!(min && ds < min)
+  const MONTHS_FR = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre']
+  const MONTHS_SHORT = ['Jan','Fév','Mar','Avr','Mai','Jun','Jul','Aoû','Sep','Oct','Nov','Déc']
+  const DAYS_FR = ['Lu','Ma','Me','Je','Ve','Sa','Di']
+  const prevMonth = () => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y-1) } else setViewMonth(m => m-1) }
+  const nextMonth = () => {
+    const nm = viewMonth === 11 ? 0 : viewMonth + 1
+    const ny = viewMonth === 11 ? viewYear + 1 : viewYear
+    if (new Date(ny, nm, 1) > new Date(maxStr + 'T23:59:59')) return
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y+1) } else { setViewMonth(m => m+1) }
+  }
+  const label = value
+    ? new Date(value+'T12:00:00').toLocaleDateString('fr-CH', { day: 'numeric', month: 'long', year: 'numeric' })
+    : 'Choisir une date'
+  const BtnCls = 'w-6 h-6 flex items-center justify-center rounded-md hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] text-[#5C6880] transition-colors'
+  const baseCls = 'w-full bg-white dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-lg px-3 py-2 text-sm text-[#1B3050] dark:text-[#E8E4DC] focus:outline-none'
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button" onClick={() => { setOpen(o => !o); setPickerMode(null) }}
+        className={`${baseCls} flex items-center gap-2 text-left transition-colors ${open ? 'ring-2 ring-[#2B6B5A] border-transparent' : ''}`}>
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-[#9E9A93]"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span className={value ? 'text-[#1B3050] dark:text-[#E8E4DC]' : 'text-[#9E9A93]'}>{label}</span>
+      </button>
+      {open && (
+        <div className="mt-1.5 bg-white dark:bg-[#162534] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-xl shadow-md p-3 w-full select-none">
+          <div className="flex items-center justify-between mb-2.5">
+            {pickerMode === null && (
+              <button type="button" onClick={prevMonth} className={BtnCls}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            )}
+            {pickerMode === 'month' && (
+              <button type="button" onClick={() => setPickerMode(null)} className={BtnCls}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            )}
+            {pickerMode === 'year' && (
+              <button type="button" onClick={() => setYearPage(p => p - 12)} className={BtnCls}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            )}
+            <div className="flex items-center gap-1">
+              {pickerMode === 'year' ? (
+                <span className="text-xs font-semibold text-[#1B3050] dark:text-white tracking-wide">{yearPage} – {yearPage + 11}</span>
+              ) : (
+                <>
+                  <button type="button" onClick={() => setPickerMode(m => m === 'month' ? null : 'month')}
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${pickerMode === 'month' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    {MONTHS_FR[viewMonth]}
+                  </button>
+                  <button type="button" onClick={() => { setPickerMode(m => m === 'year' ? null : 'year'); setYearPage(Math.floor(viewYear / 12) * 12) }}
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${pickerMode === 'year' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    {viewYear}
+                  </button>
+                </>
+              )}
+            </div>
+            {pickerMode === null && (
+              <button type="button" onClick={nextMonth} className={BtnCls}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+            )}
+            {pickerMode === 'month' && <span className="w-6"/>}
+            {pickerMode === 'year' && (
+              <button type="button" onClick={() => { if (yearPage + 12 <= maxYear) setYearPage(p => p + 12) }} className={BtnCls} disabled={yearPage + 12 > maxYear}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+            )}
+          </div>
+          {pickerMode === 'month' && (
+            <div className="grid grid-cols-3 gap-1">
+              {MONTHS_SHORT.map((m, i) => {
+                const firstOfMonth = localDateStr(viewYear, i, 1)
+                const daysInM = new Date(viewYear, i+1, 0).getDate()
+                const lastOfMonth = localDateStr(viewYear, i, daysInM)
+                const allDisabled = lastOfMonth < (min || '0000') || firstOfMonth > maxStr
+                const isActive = i === viewMonth
+                return (
+                  <button type="button" key={i} disabled={allDisabled}
+                    onClick={() => { setViewMonth(i); setPickerMode(null) }}
+                    className={[
+                      'h-8 rounded-lg text-[11px] font-medium transition-colors',
+                      isActive ? 'bg-[#2B6B5A] text-white' : '',
+                      !isActive && !allDisabled ? 'hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
+                      allDisabled ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : '',
+                    ].join(' ')}>
+                    {m}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {pickerMode === 'year' && (
+            <div className="grid grid-cols-3 gap-1">
+              {Array.from({length: 12}).map((_, i) => {
+                const y = yearPage + i
+                const isFuture = y > maxYear
+                const tooOld = min ? y < new Date(min).getFullYear() : false
+                const disabled = isFuture || tooOld
+                const isActive = y === viewYear
+                return (
+                  <button type="button" key={y} disabled={disabled}
+                    onClick={() => { setViewYear(y); setPickerMode(null) }}
+                    className={[
+                      'h-8 rounded-lg text-[11px] font-medium transition-colors',
+                      isActive ? 'bg-[#2B6B5A] text-white' : '',
+                      !isActive && !disabled ? 'hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
+                      disabled ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : '',
+                    ].join(' ')}>
+                    {y}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {pickerMode === null && (
+            <>
+              <div className="grid grid-cols-7 mb-1">
+                {DAYS_FR.map(d => <span key={d} className="text-center text-[9px] font-semibold text-[#9E9A93] py-0.5">{d}</span>)}
+              </div>
+              <div className="grid grid-cols-7">
+                {Array.from({length: startOffset}).map((_, i) => <span key={`e${i}`}/>)}
+                {Array.from({length: daysInMonth}).map((_, i) => {
+                  const day = i + 1
+                  const ds = cellDate(day)
+                  const disabled = isDisabled(ds)
+                  const isSelected = ds === value
+                  const isToday = ds === todayStr
+                  return (
+                    <button type="button" key={day} disabled={disabled}
+                      onClick={() => { if (!disabled) { onChange(ds); setOpen(false) } }}
+                      className={[
+                        'text-center text-[11px] h-7 w-full rounded-full transition-colors leading-none',
+                        isSelected ? 'bg-[#2B6B5A] text-white font-bold' : '',
+                        !isSelected && !disabled ? 'hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
+                        isToday && !isSelected ? 'font-bold text-[#2B6B5A] dark:text-[#7FC5B0]' : '',
+                        disabled ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : 'cursor-pointer',
+                      ].join(' ')}>
+                      {day}
+                    </button>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DateRangePicker({
+  dateFrom, dateTo,
+  onFromChange, onToChange
+}: {
+  dateFrom: string; dateTo: string;
+  onFromChange: (v: string) => void;
+  onToChange: (v: string) => void
+}) {
+  const [open, setOpen] = React.useState(false)
+  const [hovered, setHovered] = React.useState<string | null>(null)
+  const [pickerMode, setPickerMode] = React.useState<null | 'month' | 'year'>(null)
+  // Timezone-safe: on construit la chaîne depuis les composantes locales,
+  // new Date(y,m,d).toISOString() donnerait le jour précédent en UTC+2.
+  const localDateStr = (y: number, m: number, d: number) =>
+    `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+  const todayLocal = new Date()
+  const todayStr = localDateStr(todayLocal.getFullYear(), todayLocal.getMonth(), todayLocal.getDate())
+  const todayYear = todayLocal.getFullYear()
+  const parseRef = (s: string | undefined) => s ? { y: parseInt(s.slice(0,4)), m: parseInt(s.slice(5,7))-1 } : { y: todayLocal.getFullYear(), m: todayLocal.getMonth() }
+  const refDate = dateTo || dateFrom
+  const [viewYear, setViewYear] = React.useState(() => parseRef(refDate).y)
+  const [viewMonth, setViewMonth] = React.useState(() => parseRef(refDate).m)
+  const [yearPage, setYearPage] = React.useState(() => Math.floor(parseRef(refDate).y / 12) * 12)
+  const ref = React.useRef<HTMLDivElement>(null)
+  React.useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); setPickerMode(null) }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
+  const startOffset = (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7
+  const cellDate = (day: number) => localDateStr(viewYear, viewMonth, day)
+  const handleDayClick = (ds: string) => {
+    if (!dateFrom || (dateFrom && dateTo)) {
+      onFromChange(ds); onToChange('')
+    } else {
+      if (ds < dateFrom) { onFromChange(ds); onToChange('') }
+      else {
+        const diff = (new Date(ds).getTime() - new Date(dateFrom).getTime()) / 86400000
+        if (diff > 60) return
+        onToChange(ds); setOpen(false)
+      }
+    }
+  }
+  const isDisabled = (ds: string) => {
+    if (ds > todayStr) return true
+    if (dateFrom && !dateTo) {
+      const diff = (new Date(ds).getTime() - new Date(dateFrom).getTime()) / 86400000
+      if (diff > 60) return true
+    }
+    return false
+  }
+  const isInRange = (ds: string) => {
+    const to = dateTo || hovered
+    if (!dateFrom || !to) return false
+    const mn = dateFrom < to ? dateFrom : to
+    const mx = dateFrom < to ? to : dateFrom
+    return ds > mn && ds < mx
+  }
+  const isStart = (ds: string) => ds === dateFrom
+  const isEnd = (ds: string) => !!(dateTo || hovered) && ds === (dateTo || hovered)
+  const MONTHS_FR = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre']
+  const MONTHS_SHORT = ['Jan','Fév','Mar','Avr','Mai','Jun','Jul','Aoû','Sep','Oct','Nov','Déc']
+  const DAYS_FR = ['Lu','Ma','Me','Je','Ve','Sa','Di']
+  const prevMonth = () => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y-1) } else setViewMonth(m => m-1) }
+  const nextMonth = () => {
+    const nm = viewMonth === 11 ? 0 : viewMonth + 1
+    const ny = viewMonth === 11 ? viewYear + 1 : viewYear
+    if (new Date(ny, nm, 1) > today) return
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y+1) } else { setViewMonth(m => m+1) }
+  }
+  const label = dateFrom && dateTo
+    ? `${new Date(dateFrom+'T12:00:00').toLocaleDateString('fr-CH',{day:'numeric',month:'short'})} – ${new Date(dateTo+'T12:00:00').toLocaleDateString('fr-CH',{day:'numeric',month:'short'})}`
+    : dateFrom ? `${new Date(dateFrom+'T12:00:00').toLocaleDateString('fr-CH',{day:'numeric',month:'short'})} → …`
+    : 'Choisir les dates'
+  const BtnCls = 'w-6 h-6 flex items-center justify-center rounded-md hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] text-[#5C6880] transition-colors'
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => { setOpen(o => !o); setPickerMode(null) }}
+        className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border transition-colors ${open || (dateFrom && dateTo) ? 'border-[#2B6B5A] bg-[#EEF7F3] dark:bg-[#152920] text-[#2B6B5A]' : 'border-[#DDD9D1] dark:border-[#2a3f52] bg-[#F5F3EF] dark:bg-[#1B2D3E] text-[#5C6880] dark:text-[#9E9A93]'}`}>
+        <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span className="font-medium">{label}</span>
+        {(dateFrom || dateTo) && (
+          <span onClick={e => { e.stopPropagation(); onFromChange(''); onToChange('') }}
+            className="ml-0.5 w-3.5 h-3.5 flex items-center justify-center rounded-full bg-[#2B6B5A] bg-opacity-20 text-[#2B6B5A] hover:bg-opacity-40 text-[9px] leading-none">✕</span>
+        )}
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1.5 z-50 bg-white dark:bg-[#162534] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-xl shadow-xl p-3 w-60 select-none">
+          {/* ── Header ── */}
+          <div className="flex items-center justify-between mb-2.5">
+            {pickerMode === null && (
+              <button onClick={prevMonth} className={BtnCls}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            )}
+            {pickerMode === 'month' && (
+              <button onClick={() => setPickerMode(null)} className={BtnCls}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            )}
+            {pickerMode === 'year' && (
+              <button onClick={() => { setYearPage(p => p - 12) }} className={BtnCls}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+            )}
+            <div className="flex items-center gap-1">
+              {pickerMode === 'year' ? (
+                <span className="text-xs font-semibold text-[#1B3050] dark:text-white tracking-wide">{yearPage} – {yearPage + 11}</span>
+              ) : (
+                <>
+                  <button onClick={() => setPickerMode(m => m === 'month' ? null : 'month')}
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${pickerMode === 'month' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    {MONTHS_FR[viewMonth]}
+                  </button>
+                  <button onClick={() => { setPickerMode(m => m === 'year' ? null : 'year'); setYearPage(Math.floor(viewYear / 12) * 12) }}
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${pickerMode === 'year' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    {viewYear}
+                  </button>
+                </>
+              )}
+            </div>
+            {pickerMode === null && (
+              <button onClick={nextMonth} className={BtnCls}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+            )}
+            {pickerMode === 'month' && <span className="w-6"/>}
+            {pickerMode === 'year' && (
+              <button onClick={() => { if (yearPage + 12 <= todayYear) setYearPage(p => p + 12) }} className={BtnCls} disabled={yearPage + 12 > todayYear}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+            )}
+          </div>
+
+          {/* ── Month picker ── */}
+          {pickerMode === 'month' && (
+            <div className="grid grid-cols-3 gap-1 mb-1">
+              {MONTHS_SHORT.map((m, i) => {
+                const isFuture = new Date(viewYear, i, 1) > today
+                const isActive = i === viewMonth
+                return (
+                  <button key={i} disabled={isFuture}
+                    onClick={() => { setViewMonth(i); setPickerMode(null) }}
+                    className={[
+                      'h-8 rounded-lg text-[11px] font-medium transition-colors',
+                      isActive ? 'bg-[#2B6B5A] text-white' : '',
+                      !isActive && !isFuture ? 'hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
+                      isFuture ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : '',
+                    ].join(' ')}>
+                    {m}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {/* ── Year picker ── */}
+          {pickerMode === 'year' && (
+            <div className="grid grid-cols-3 gap-1 mb-1">
+              {Array.from({length: 12}).map((_, i) => {
+                const y = yearPage + i
+                const isFuture = y > todayYear
+                const isActive = y === viewYear
+                return (
+                  <button key={y} disabled={isFuture}
+                    onClick={() => { setViewYear(y); setPickerMode(null) }}
+                    className={[
+                      'h-8 rounded-lg text-[11px] font-medium transition-colors',
+                      isActive ? 'bg-[#2B6B5A] text-white' : '',
+                      !isActive && !isFuture ? 'hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
+                      isFuture ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : '',
+                    ].join(' ')}>
+                    {y}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {/* ── Day calendar ── */}
+          {pickerMode === null && (
+            <>
+              <div className="grid grid-cols-7 mb-1">
+                {DAYS_FR.map(d => <span key={d} className="text-center text-[9px] font-semibold text-[#9E9A93] py-0.5">{d}</span>)}
+              </div>
+              <div className="grid grid-cols-7">
+                {Array.from({length: startOffset}).map((_, i) => <span key={`e${i}`}/>)}
+                {Array.from({length: daysInMonth}).map((_, i) => {
+                  const day = i + 1
+                  const ds = cellDate(day)
+                  const disabled = isDisabled(ds)
+                  const start = isStart(ds)
+                  const end = isEnd(ds)
+                  const inRange = isInRange(ds)
+                  const isToday = ds === todayStr
+                  return (
+                    <button key={day}
+                      disabled={disabled}
+                      onMouseEnter={() => { if (dateFrom && !dateTo && !disabled) setHovered(ds) }}
+                      onMouseLeave={() => setHovered(null)}
+                      onClick={() => !disabled && handleDayClick(ds)}
+                      className={[
+                        'text-center text-[11px] h-7 w-full transition-colors leading-none',
+                        start && end ? 'rounded-full bg-[#2B6B5A] text-white font-bold' : '',
+                        start && !end ? 'rounded-l-full bg-[#2B6B5A] text-white font-bold' : '',
+                        !start && end ? 'rounded-r-full bg-[#2B6B5A] text-white font-bold' : '',
+                        inRange && !start && !end ? 'bg-[#D4EDE6] dark:bg-[#173328] text-[#2B6B5A] dark:text-[#7FC5B0]' : '',
+                        !start && !end && !inRange && !disabled ? 'rounded-full hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
+                        isToday && !start && !end ? 'font-bold text-[#2B6B5A] dark:text-[#7FC5B0]' : '',
+                        disabled ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : 'cursor-pointer',
+                      ].join(' ')}>
+                      {day}
+                    </button>
+                  )
+                })}
+              </div>
+            </>
+          )}
+
+          <div className="mt-2 pt-2 border-t border-[#EDE9E1] dark:border-[#1e3245]">
+            <p className="text-[9px] text-[#9E9A93] text-center leading-tight">
+              {!dateFrom ? 'Cliquez pour choisir le début' : !dateTo ? 'Cliquez pour choisir la fin (max 60 jours)' : `${Math.round((new Date(dateTo+'T12:00:00').getTime()-new Date(dateFrom+'T12:00:00').getTime())/86400000)+1} jours sélectionnés`}
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function PortfolioPage() {
   const [positions, setPositions] = useState<Position[]>([])
   const [activeTab, setActiveTab] = useState<'positions' | 'analyse' | 'cloturees'>('positions')
@@ -3093,6 +3866,8 @@ export default function PortfolioPage() {
   const [sliceQuantiteRaw, setSliceQuantiteRaw] = useState('')
   const [sliceQuantite, setSliceQuantite] = useState(0)
   const [sliceGroupTotal, setSliceGroupTotal] = useState(0)  // total du groupe (tous lots) au moment de l'ouverture
+  const [groupHasSlices, setGroupHasSlices] = useState(false) // true si le groupe a déjà des ajouts/réductions
+  const [formTickerMinDate, setFormTickerMinDate] = useState<string | undefined>(undefined) // première date dispo dans l'historique de l'actif sélectionné
   const [slicePrixVenteRaw, setSlicePrixVenteRaw] = useState('')
   const [slicePrixVente, setSlicePrixVente] = useState<number | undefined>(undefined)
   const [sliceHistoPrice, setSliceHistoPrice] = useState<{ price: number; fxRate: number } | null>(null)
@@ -3403,15 +4178,24 @@ export default function PortfolioPage() {
       .finally(() => setSliceHistoLoading(false))
   }, [sliceDate, sliceMode, form.ticker, form.devise])
 
-  function openAdd() { setEditId(null); setForm(EMPTY_FORM); setQuantiteRaw(''); setFetchModalError(null); setManuel(false); setSliceMode(false); setSliceDate(''); setSliceQuantiteRaw(''); setSliceQuantite(0); setSlicePrixVenteRaw(''); setSlicePrixVente(undefined); setSliceHistoPrice(null); setShowModal(true) }
+  function openAdd() { setEditId(null); setForm(EMPTY_FORM); setQuantiteRaw(''); setFetchModalError(null); setManuel(false); setSliceMode(false); setSliceDate(''); setSliceQuantiteRaw(''); setSliceQuantite(0); setSlicePrixVenteRaw(''); setSlicePrixVente(undefined); setSliceHistoPrice(null); setGroupHasSlices(false); setFormTickerMinDate(undefined); setShowModal(true) }
   function openEdit(p: Position) {
     // Calculer le total du groupe (tous lots actifs du même ticker)
     const grp = groupedPositions[p.ticker.toUpperCase()]
     const groupTotal = grp ? grp.reduce((s, pc) => s + pc.quantite, 0) : p.quantite
+    const hasSlices = grp ? grp.length > 1 : false
     setEditId(p.id); setForm({ ...p }); setQuantiteRaw(String(p.quantite)); setFetchModalError(null); setManuel(true)
     setSliceMode(false); setSliceDate(p.dateAchat); setSliceQuantiteRaw(String(groupTotal)); setSliceQuantite(groupTotal)
     setSliceGroupTotal(groupTotal)
-    setSlicePrixVenteRaw(''); setSlicePrixVente(undefined); setSliceHistoPrice(null); setShowModal(true)
+    setGroupHasSlices(hasSlices)
+    setSlicePrixVenteRaw(''); setSlicePrixVente(undefined); setSliceHistoPrice(null)
+    // Charger la première date dispo de l'historique du ticker
+    setFormTickerMinDate(undefined)
+    fetchHistory(p.ticker).then(raw => {
+      const hist = raw[p.ticker] as { dates?: string[] } | undefined
+      if (hist?.dates && hist.dates.length > 0) setFormTickerMinDate(hist.dates[0])
+    }).catch(() => {})
+    setShowModal(true)
   }
 
   async function upsertPositionDB(supabase: ReturnType<typeof createClient>, pos: Position) {
@@ -4016,7 +4800,7 @@ export default function PortfolioPage() {
                         {(['all', 'weekly', '60d'] as const).map(r => (
                           <button key={r} onClick={() => { setChartRange(r); if (r !== '60d') { setChartDateFrom(''); setChartDateTo('') } }}
                             className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${chartRange === r ? 'bg-white dark:bg-[#162534] text-[#1B3050] dark:text-white shadow-sm' : 'text-[#9E9A93] hover:text-[#5C6880]'}`}>
-                            {r === 'all' ? 'Mois' : r === 'weekly' ? 'Sem' : '60j'}
+                            {r === 'all' ? 'Mois' : r === 'weekly' ? 'Sem' : 'Jours'}
                           </button>
                         ))}
                       </div>
@@ -4035,39 +4819,36 @@ export default function PortfolioPage() {
                     </div>
                   </div>
                   {chartRange === '60d' && (
-                    <div className="flex items-center gap-2 mt-2 flex-wrap">
-                      <span className="text-xs text-[#9E9A93]">Du</span>
-                      <input type="date" value={chartDateFrom}
-                        onChange={e => {
-                          const f = e.target.value; setChartDateFrom(f)
-                          if (chartDateTo && f && (new Date(chartDateTo).getTime() - new Date(f).getTime()) / 86400000 > 60) {
-                            const cap = new Date(f); cap.setDate(cap.getDate() + 60); setChartDateTo(cap.toISOString().slice(0, 10))
-                          }
-                        }}
-                        className="text-xs bg-[#F5F3EF] dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-md px-2 py-0.5 text-[#1B3050] dark:text-[#E8E4DC] focus:outline-none focus:ring-1 focus:ring-[#2B6B5A]" />
-                      <span className="text-xs text-[#9E9A93]">au</span>
-                      <input type="date" value={chartDateTo}
-                        min={chartDateFrom || undefined}
-                        onChange={e => {
-                          const t = e.target.value
-                          if (chartDateFrom && (new Date(t).getTime() - new Date(chartDateFrom).getTime()) / 86400000 > 60) return
-                          setChartDateTo(t)
-                        }}
-                        className="text-xs bg-[#F5F3EF] dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-md px-2 py-0.5 text-[#1B3050] dark:text-[#E8E4DC] focus:outline-none focus:ring-1 focus:ring-[#2B6B5A]" />
-                      {chartDateFrom && chartDateTo && (
-                        <span className="text-xs text-[#9E9A93]">({Math.ceil((new Date(chartDateTo).getTime() - new Date(chartDateFrom).getTime()) / 86400000) + 1}j)</span>
-                      )}
-                      {(chartDateFrom || chartDateTo) && (
-                        <button onClick={() => { setChartDateFrom(''); setChartDateTo('') }}
-                          className="text-xs text-[#9E9A93] hover:text-[#5C6880] underline">réinitialiser</button>
-                      )}
+                    <div className="flex items-center mt-2">
+                      <DateRangePicker
+                        dateFrom={chartDateFrom}
+                        dateTo={chartDateTo}
+                        onFromChange={setChartDateFrom}
+                        onToChange={setChartDateTo}
+                      />
                     </div>
                   )}
                   {chartMode === 'evol' && <EvolChart data={positionsCalc} showFX={true} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
                   {chartMode === 'pnl' && <PnLChart data={positionsCalc} tickerDivs={tickerDivs} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
                   {chartMode === 'drawdown' && <DrawdownChart data={positionsCalc} onMaxDrawdown={(pct, date) => setMaxDrawdown({ pct, date })} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
                   <p className="text-xs text-[#9E9A93] mt-2">
-                    {chartMode === 'evol' ? (chartRange === '60d' ? 'Valeur journalière du portefeuille sur les 60 derniers jours.' : chartRange === 'weekly' ? 'Valeur hebdomadaire du portefeuille depuis le premier achat.' : 'Valeur mensuelle réelle du portefeuille depuis le premier achat.') : chartMode === 'pnl' ? (chartRange === '60d' ? 'Gain journalier cumulé (variation de prix + gains réalisés dont dividendes) sur les 60 derniers jours.' : chartRange === 'weekly' ? 'Gain hebdomadaire cumulé (variation de prix + gains réalisés dont dividendes) depuis le premier achat.' : 'Gain mensuel cumulé (variation de prix + gains réalisés dont dividendes) basé sur les prix historiques réels. Nominal = en CHF courant · Réel = ajusté inflation.') : (chartRange === '60d' ? 'Drawdown journalier sur les 60 derniers jours.' : chartRange === 'weekly' ? 'Drawdown hebdomadaire depuis le premier achat.' : 'Recul maximal par rapport au pic de valeur du portefeuille.')}
+                    {chartMode === 'evol'
+                      ? chartRange === '60d'
+                        ? 'Valeur totale de votre portefeuille jour par jour, sur la période choisie.'
+                        : chartRange === 'weekly'
+                        ? 'Valeur totale de votre portefeuille semaine par semaine, depuis votre premier achat.'
+                        : 'Valeur totale de votre portefeuille mois par mois, depuis votre premier achat.'
+                      : chartMode === 'pnl'
+                      ? chartRange === '60d'
+                        ? 'Gain ou perte cumulé jour par jour, sur la période choisie. Inclut les variations de prix et les gains réalisés.'
+                        : chartRange === 'weekly'
+                        ? 'Gain ou perte cumulé semaine par semaine, depuis votre premier achat. Inclut les variations de prix et les gains réalisés.'
+                        : "Gain ou perte cumulé mois par mois, depuis votre premier achat. Inclut les variations de prix et les gains réalisés."
+                      : chartRange === '60d'
+                      ? 'Recul par rapport au dernier sommet, jour par jour, sur la période choisie. 0 % = au plus haut · −10 % = 10 % en dessous du pic.'
+                      : chartRange === 'weekly'
+                      ? 'Recul par rapport au dernier sommet, semaine par semaine, depuis votre premier achat. 0 % = au plus haut · −10 % = 10 % en dessous du pic.'
+                      : 'Recul par rapport au dernier sommet, mois par mois, depuis votre premier achat. 0 % = au plus haut · −10 % = 10 % en dessous du pic.'}
                   </p>
                 </div>
                 <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
@@ -4804,11 +5585,10 @@ export default function PortfolioPage() {
                     <p className="text-xs text-[#9E9A93] mt-0.5">La position reste dans l'historique mais disparaît du portefeuille actuel à partir de la date choisie.</p>
                     {deleteMode === 'close' && (
                       <div className="mt-2 space-y-2">
-                        <input
-                          className={`w-full bg-white dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-lg px-3 py-2 text-sm text-[#1B3050] dark:text-[#E8E4DC] focus:outline-none focus:ring-2 focus:ring-[#2B6B5A]`}
-                          type="date"
+                        <FormDatePicker
                           value={deleteCloseDate}
-                          onChange={e => { setDeleteCloseDate(e.target.value); setDeleteHistoPrice(null) }}
+                          min={deleteTarget?.dateAchat}
+                          onChange={v => { setDeleteCloseDate(v); setDeleteHistoPrice(null) }}
                         />
                         {deleteCloseDate && deleteHistoLoading && (
                           <p className="text-xs text-[#9E9A93] animate-pulse">Récupération du prix historique…</p>
@@ -4884,67 +5664,111 @@ export default function PortfolioPage() {
 
               {/* 2. Recherche actif */}
               <div>
-                <label className="block text-xs font-medium text-[#5C6880] mb-1.5">Actif *</label>
-                <TickerAutocomplete
-                  placeholder={CATEGORY_PLACEHOLDER[form.categorie]}
-                  value={{ ticker: form.ticker, nom: form.nom, devise: form.devise }}
-                  filterTypes={effectiveTypes}
-                  filterExch={brokerProfile?.exchKeywords}
-                  categorySuggestions={CATEGORY_SUGGESTIONS[form.categorie]}
-                  onChange={({ ticker, nom, devise, type }) => {
-                    const TYPE_TO_CAT: Record<string, string> = {
-                      'equity': 'Actions', 'etf': 'ETF',
-                      'cryptocurrency': 'Crypto', 'future': 'Matières premières',
-                      'futures': 'Matières premières', 'currency': 'Monnaies',
-                      'mutual fund': 'ETF Oblig.', 'mutualfund': 'ETF Oblig.', 'bond': 'ETF Oblig.',
-                    }
-                    const categorie = TYPE_TO_CAT[type.toLowerCase()] ?? form.categorie
-                    setForm(f => ({ ...f, ticker, nom, devise, categorie }))
-                    setFetchModalError(null)
-                    if (ticker) {
-                      setManuel(true)
-                      fetchPrixActuelFor(ticker, devise)
-                      if (form.dateAchat) fetchPrixAchatFor(ticker, devise, form.dateAchat)
-                    }
-                  }}
-                />
-                {form.ticker && (
-                  <p className="text-xs text-[#9E9A93] mt-1">
-                    <span className="font-mono text-[#2B6B5A] font-medium">{form.ticker}</span>
-                    {' '}· <span className="font-mono">{form.devise}</span>
-                  </p>
+                <label className="block text-xs font-medium text-[#5C6880] mb-1.5">
+                  Actif *
+                  {editId && groupHasSlices && <span className="ml-1 text-[#9E9A93] font-normal">(verrouillé)</span>}
+                </label>
+                {editId && groupHasSlices ? (
+                  <div className={`${inputCls} bg-[#F5F3EF] dark:bg-[#0F1E2C] text-[#9E9A93] cursor-not-allowed select-none`}
+                    title="L'actif ne peut plus être modifié après un ajout ou une réduction">
+                    {form.nom ? `${form.nom} · ` : ''}<span className="font-mono text-[#2B6B5A] font-medium">{form.ticker}</span>
+                    {form.devise ? <span className="font-mono text-[#9E9A93]"> · {form.devise}</span> : null}
+                  </div>
+                ) : (
+                  <>
+                    <TickerAutocomplete
+                      placeholder={CATEGORY_PLACEHOLDER[form.categorie]}
+                      value={{ ticker: form.ticker, nom: form.nom, devise: form.devise }}
+                      filterTypes={effectiveTypes}
+                      filterExch={brokerProfile?.exchKeywords}
+                      categorySuggestions={CATEGORY_SUGGESTIONS[form.categorie]}
+                      onChange={({ ticker, nom, devise, type }) => {
+                        const TYPE_TO_CAT: Record<string, string> = {
+                          'equity': 'Actions', 'etf': 'ETF',
+                          'cryptocurrency': 'Crypto', 'future': 'Matières premières',
+                          'futures': 'Matières premières', 'currency': 'Monnaies',
+                          'mutual fund': 'ETF Oblig.', 'mutualfund': 'ETF Oblig.', 'bond': 'ETF Oblig.',
+                        }
+                        const categorie = TYPE_TO_CAT[type.toLowerCase()] ?? form.categorie
+                        setForm(f => ({ ...f, ticker, nom, devise, categorie }))
+                        setFetchModalError(null)
+                        setFormTickerMinDate(undefined)
+                        if (ticker) {
+                          setManuel(true)
+                          fetchPrixActuelFor(ticker, devise)
+                          if (form.dateAchat) fetchPrixAchatFor(ticker, devise, form.dateAchat)
+                          fetchHistory(ticker).then(raw => {
+                            const hist = raw[ticker] as { dates?: string[] } | undefined
+                            if (hist?.dates && hist.dates.length > 0) setFormTickerMinDate(hist.dates[0])
+                          }).catch(() => {})
+                        }
+                      }}
+                    />
+                    {form.ticker && (
+                      <p className="text-xs text-[#9E9A93] mt-1">
+                        <span className="font-mono text-[#2B6B5A] font-medium">{form.ticker}</span>
+                        {' '}· <span className="font-mono">{form.devise}</span>
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
 
               {/* 3. Quantité + Date */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-[#5C6880] mb-1">Quantité</label>
-                  <input className={inputCls} type="text" inputMode="decimal"
-                    placeholder="ex: 0.00001" value={quantiteRaw}
-                    onChange={e => {
-                      const raw = e.target.value
-                      if (raw === '' || /^[0-9]*[.,]?[0-9]*$/.test(raw)) {
-                        setQuantiteRaw(raw)
-                        const num = parseFloat(raw.replace(',', '.'))
-                        if (!isNaN(num)) setForm(f => ({ ...f, quantite: num }))
-                        else if (raw === '') setForm(f => ({ ...f, quantite: 0 }))
-                      }
-                    }} />
+                  <label className="block text-xs font-medium text-[#5C6880] mb-1">
+                    Quantité
+                    {editId && groupHasSlices && <span className="ml-1 text-[#9E9A93] font-normal">(verrouillé)</span>}
+                  </label>
+                  {editId && groupHasSlices ? (
+                    <div className={`${inputCls} bg-[#F5F3EF] dark:bg-[#0F1E2C] text-[#9E9A93] cursor-not-allowed select-none`}
+                      title="Modifiez via Ajout/Réduction pour changer la quantité">
+                      {sliceGroupTotal}
+                    </div>
+                  ) : (
+                    <input className={inputCls} type="text" inputMode="decimal"
+                      placeholder="ex: 0.00001" value={quantiteRaw}
+                      onChange={e => {
+                        const raw = e.target.value
+                        if (raw === '' || /^[0-9]*[.,]?[0-9]*$/.test(raw)) {
+                          setQuantiteRaw(raw)
+                          const num = parseFloat(raw.replace(',', '.'))
+                          if (!isNaN(num)) setForm(f => ({ ...f, quantite: num }))
+                          else if (raw === '') setForm(f => ({ ...f, quantite: 0 }))
+                        }
+                      }} />
+                  )}
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-[#5C6880] mb-1">Date d'achat</label>
-                  <input className={inputCls} type="date" value={form.dateAchat}
-                    onChange={e => {
-                      const date = e.target.value
-                      setForm(f => ({ ...f, dateAchat: date }))
-                      if (form.ticker && date) {
-                        setManuel(true)
-                        fetchPrixAchatFor(form.ticker, form.devise, date)
-                      }
-                    }} />
+                  <label className="block text-xs font-medium text-[#5C6880] mb-1">
+                    Date d'achat
+                    {editId && groupHasSlices && <span className="ml-1 text-[#9E9A93] font-normal">(verrouillé)</span>}
+                  </label>
+                  {editId && groupHasSlices ? (
+                    <div className={`${inputCls} bg-[#F5F3EF] dark:bg-[#0F1E2C] text-[#9E9A93] cursor-not-allowed select-none`}
+                      title="La date d'achat ne peut plus être modifiée après un ajout ou une réduction">
+                      {form.dateAchat ? fmtDate(form.dateAchat) : ''}
+                    </div>
+                  ) : (
+                    <FormDatePicker
+                      value={form.dateAchat}
+                      min={formTickerMinDate}
+                      onChange={date => {
+                        setForm(f => ({ ...f, dateAchat: date }))
+                        if (form.ticker && date) {
+                          setManuel(true)
+                          fetchPrixAchatFor(form.ticker, form.devise, date)
+                        }
+                      }} />
+                  )}
                 </div>
               </div>
+              {editId && groupHasSlices && (
+                <p className="text-xs text-[#9E9A93] -mt-1">
+                  La quantité et la date d'achat ne sont plus modifiables car cette position a déjà des ajouts ou réductions enregistrés.
+                </p>
+              )}
 
               {/* Status des fetches automatiques */}
               {(fetchingAchat || fetchingModal) && (
@@ -5033,9 +5857,10 @@ export default function PortfolioPage() {
                       <div className="grid grid-cols-2 gap-3 items-start">
                         <div>
                           <label className="block text-xs font-medium text-[#5C6880] mb-1">Date du changement</label>
-                          <input className={inputCls} type="date" value={sliceDate}
-                            min={form.dateAchat}
-                            onChange={e => setSliceDate(e.target.value)} />
+                          <FormDatePicker
+                            value={sliceDate}
+                            min={form.dateAchat || undefined}
+                            onChange={setSliceDate} />
                           {form.dateAchat && sliceDate && sliceDate < form.dateAchat ? (
                             <p className="text-xs mt-1 text-red-500 font-medium">La date ne peut pas être antérieure à l'ouverture ({form.dateAchat})</p>
                           ) : form.dateAchat ? (
