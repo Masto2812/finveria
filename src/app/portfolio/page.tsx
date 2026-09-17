@@ -4184,7 +4184,7 @@ export default function PortfolioPage() {
   async function saveForm() {
     if (!form.ticker) return
     if (editId && sliceMode && sliceDate && form.dateAchat && sliceDate < form.dateAchat) return
-    if (!sliceMode && (!form.quantite || form.quantite === 0)) {
+    if (!sliceMode && !(editId && groupHasSlices) && (quantiteRaw === '' || !(form.quantite > 0))) {
       setQuantiteError('Veuillez saisir une quantité supérieure à 0')
       return
     }
@@ -5713,7 +5713,7 @@ export default function PortfolioPage() {
                   className="flex-1 border border-[#DDD9D1] dark:border-[#2a3f52] text-[#5C6880] text-sm py-2 rounded-lg hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] transition-colors">
                   Annuler
                 </button>
-                <button onClick={saveForm} disabled={(!form.ticker && !form.nom) || (sliceMode && !!sliceDate && !!form.dateAchat && sliceDate < form.dateAchat)}
+                <button onClick={saveForm} disabled={(!form.ticker && !form.nom) || (sliceMode && !!sliceDate && !!form.dateAchat && sliceDate < form.dateAchat) || (!sliceMode && !(editId && groupHasSlices) && !(form.quantite > 0))}
                   className="flex-1 bg-[#2B6B5A] hover:bg-[#225549] disabled:opacity-40 text-white text-sm py-2 rounded-lg transition-colors font-medium">
                   {editId ? (sliceMode ? "Créer l'ajustement" : 'Enregistrer') : 'Ajouter'}
                 </button>
