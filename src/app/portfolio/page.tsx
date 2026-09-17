@@ -5492,18 +5492,20 @@ export default function PortfolioPage() {
                       {sliceGroupTotal}
                     </div>
                   ) : (
-                    <input className={`${inputCls}${quantiteError ? ' border-red-400 dark:border-red-500 ring-1 ring-red-400' : ''}`} type="text" inputMode="decimal"
-                      placeholder="ex: 0.00001" value={quantiteRaw}
-                      onChange={e => {
-                        const raw = e.target.value
-                        if (raw === '' || /^[0-9]*[.,]?[0-9]*$/.test(raw)) {
-                          setQuantiteRaw(raw)
-                          const num = parseFloat(raw.replace(',', '.'))
-                          if (!isNaN(num)) { setForm(f => ({ ...f, quantite: num })); if (num > 0) setQuantiteError(null) }
-                          else if (raw === '') setForm(f => ({ ...f, quantite: 0 }))
-                        }
-                      }} />
-                    {quantiteError && <p className="text-xs text-red-500 mt-1">{quantiteError}</p>}
+                    <>
+                      <input className={`${inputCls}${quantiteError ? ' border-red-400 dark:border-red-500 ring-1 ring-red-400' : ''}`} type="text" inputMode="decimal"
+                        placeholder="ex: 0.00001" value={quantiteRaw}
+                        onChange={e => {
+                          const raw = e.target.value
+                          if (raw === '' || /^[0-9]*[.,]?[0-9]*$/.test(raw)) {
+                            setQuantiteRaw(raw)
+                            const num = parseFloat(raw.replace(',', '.'))
+                            if (!isNaN(num)) { setForm(f => ({ ...f, quantite: num })); if (num > 0) setQuantiteError(null) }
+                            else if (raw === '') setForm(f => ({ ...f, quantite: 0 }))
+                          }
+                        }} />
+                      {quantiteError && <p className="text-xs text-red-500 mt-1">{quantiteError}</p>}
+                    </>
                   )}
                 </div>
                 <div>
