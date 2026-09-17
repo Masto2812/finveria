@@ -987,8 +987,10 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
         _idxs.push(_n - 1)
         if (_idxs.length > 1 && (_vp[_n - 1].x - _vp[_idxs[_idxs.length - 2]].x) * iW < 44) _idxs.splice(_idxs.length - 2, 1)
         return _idxs.map(idx => {
-          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]
-          return <text key={idx} x={Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
+          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]; const isFst = idx === 0
+          const _anchor = isFst ? 'start' : isLst ? 'end' : 'middle'
+          const _x = isFst ? Math.max(PAD.l, px(p.x)) : isLst ? Math.min(W - PAD.r, px(p.x)) : Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))
+          return <text key={idx} x={_x} y={H - 6} textAnchor={_anchor} fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
         })
       })()}
     </svg>
@@ -1382,8 +1384,10 @@ function PnLChart({ data, range, dateFrom, dateTo, bustKey = 0 }: { data: Positi
         _idxs.push(_n - 1)
         if (_idxs.length > 1 && (_vp[_n - 1].x - _vp[_idxs[_idxs.length - 2]].x) * iW < 44) _idxs.splice(_idxs.length - 2, 1)
         return _idxs.map(idx => {
-          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]
-          return <text key={idx} x={Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
+          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]; const isFst = idx === 0
+          const _anchor = isFst ? 'start' : isLst ? 'end' : 'middle'
+          const _x = isFst ? Math.max(PAD.l, px(p.x)) : isLst ? Math.min(W - PAD.r, px(p.x)) : Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))
+          return <text key={idx} x={_x} y={H - 6} textAnchor={_anchor} fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
         })
       })()}
       {hoverIdxPnl !== null && (() => {
@@ -1905,8 +1909,10 @@ function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey =
         _idxs.push(_n - 1)
         if (_idxs.length > 1 && (_vp[_n - 1].x - _vp[_idxs[_idxs.length - 2]].x) * iW < 44) _idxs.splice(_idxs.length - 2, 1)
         return _idxs.map(idx => {
-          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]
-          return <text key={idx} x={Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
+          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]; const isFst = idx === 0
+          const _anchor = isFst ? 'start' : isLst ? 'end' : 'middle'
+          const _x = isFst ? Math.max(PAD.l, px(p.x)) : isLst ? Math.min(W - PAD.r, px(p.x)) : Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))
+          return <text key={idx} x={_x} y={H - 6} textAnchor={_anchor} fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
         })
       })()}
 
