@@ -4816,7 +4816,8 @@ export default function PortfolioPage() {
                     <tbody className="divide-y divide-[#F5F3EF] dark:divide-[#1e3347]">
                       {groupOrder.map(ticker => {
                         const group = groupedPositions[ticker]
-                        const isMulti = group.length > 1
+                        const longLots = group.filter(p => p.quantite > 0)
+                        const isMulti = longLots.length > 1
                         const isExpanded = expandedTickers.has(ticker)
                         const first = group[0]
                         // Quantité nette restante (ex: 1000 − 200 = 800)
@@ -4844,7 +4845,7 @@ export default function PortfolioPage() {
                                   )}
                                   <div>
                                     <div className="font-medium">{first.nom}</div>
-                                    <div className="text-xs text-[#9E9A93]">{first.ticker} · {first.categorie}{isMulti ? ` · ${group.length} lots` : ''}</div>
+                                    <div className="text-xs text-[#9E9A93]">{first.ticker} · {first.categorie}{isMulti ? ` · ${longLots.length} lots` : ''}</div>
                                   </div>
                                 </div>
                               </td>
