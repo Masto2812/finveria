@@ -4625,7 +4625,6 @@ export default function PortfolioPage() {
                     return s
                   }, 0)
 
-                  if (gainVente === 0) return null
                   return (
                     <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
                       <div className="flex items-center gap-1.5 mb-1">
