@@ -1016,14 +1016,13 @@ function inflationBetween(dateAchat: string, dateTo: string): number {
   return cpiAt(dateTo) / cpiAt(dateAchat) - 1
 }
 
-function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { data: PositionCalc[]; tickerDivs?: Record<string, { dividendTTM: number; dividends: { ts: number; amount: number }[] }>; range?: 'all' | '60d' | 'weekly'; dateFrom?: string; dateTo?: string; bustKey?: number }) {
+function PnLChart({ data, range, dateFrom, dateTo, bustKey = 0 }: { data: PositionCalc[]; range?: 'all' | '60d' | 'weekly'; dateFrom?: string; dateTo?: string; bustKey?: number }) {
   const [showNominal, setShowNominal] = useState(true)
   const [showReel, setShowReel] = useState(false)
-  const [showDividendes, setShowDividendes] = useState(false)
   const W = 600, H = 200, PAD = { t: 18, r: 16, b: 40, l: 72 }
   const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
 
-  const [monthlyPts, setMonthlyPts] = useState<{ x: number; nominal: number; reel: number; nominalNoFX: number; dividendes: number; label: string }[] | null>(null)
+  const [monthlyPts, setMonthlyPts] = useState<{ x: number; nominal: number; reel: number; nominalNoFX: number; label: string }[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [hoverIdxPnl, setHoverIdxPnl] = useState<number | null>(null)
@@ -1082,8 +1081,7 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
     return { dates: list, firstDate: startMonth, totalMs: (today.getTime() - startMonth.getTime()) || 1 }
   }, [data, range])
 
-  const divKey = Object.keys(tickerDivs ?? {}).sort().join(',')
-  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + (dateFrom ?? '') + '|' + (dateTo ?? '') + '|' + divKey + '|' + bustKey, [data, range, dateFrom, dateTo, divKey, bustKey])
+  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + (dateFrom ?? '') + '|' + (dateTo ?? '') + '|' + bustKey, [data, range, dateFrom, dateTo, bustKey])
   const _bustLastSeenPnL = useRef(0)
 
   useEffect(() => {
@@ -1093,7 +1091,7 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
 
     async function fetchAll() {
       const today = new Date().toISOString().slice(0, 10)
-      const result: { x: number; nominal: number; reel: number; nominalNoFX: number; dividendes: number; label: string }[] = []
+      const result: { x: number; nominal: number; reel: number; nominalNoFX: number; label: string }[] = []
 
       // ─── Bulk history (évite N×M appels /api/prices) ──────────────────────
       const allTickers = [...new Set(data.map(p => p.ticker.toUpperCase()))]
@@ -1126,7 +1124,7 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
           if ((range === 'all' || range === 'weekly') && result.length === 0) {
             const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
             const label = range === 'weekly' ? fmtDate(dateStr) : fmtMonth(dateStr)
-            result.push({ x: t, nominal: 0, reel: 0, nominalNoFX: 0, dividendes: 0, label })
+            result.push({ x: t, nominal: 0, reel: 0, nominalNoFX: 0, label })
           }
           setProgress(Math.round((i + 1) / dates.length * 100)); continue
         }
@@ -1156,8 +1154,7 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
           return d ?? { price: p.prixActuel, fxRate: p.tauxActuelCHF }
         }))
 
-        let nominal = 0, reel = 0, nominalNoFX = 0, dividendes = 0
-        const dateTs = new Date(evalDateStr).getTime()
+        let nominal = 0, reel = 0, nominalNoFX = 0
         for (let j = 0; j < activePosns.length; j++) {
           const p = activePosns[j]
           if (p.quantite < 0 && p.prixVente != null) {
@@ -1170,7 +1167,6 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
             nominal    += valCHF + p.valeurCHF
             nominalNoFX += valNoFX + Math.abs(p.quantite) * p.prixVente * p.tauxAchatCHF
             reel       += valCHF + p.valeurCHF - p.coutCHF * inflationBetween(p.dateAchat, evalDateStr)
-            // pas de dividendes sur une position clôturée
           } else {
             const valCHF = p.quantite * prices[j].price * prices[j].fxRate
             const valNoFX = p.quantite * prices[j].price * p.tauxAchatCHF
@@ -1178,21 +1174,12 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
             nominal += valCHF - p.coutCHF
             nominalNoFX += valNoFX - p.coutCHF
             reel    += valCHF - infAdj
-            const divEntry = tickerDivs?.[p.ticker.toUpperCase()]
-            if (divEntry) {
-              const purchaseTsSec = new Date(p.dateAchat).getTime() / 1000
-              const dateTsSec = dateTs / 1000
-              dividendes += divEntry.dividends
-                .filter(d => d.ts >= purchaseTsSec && d.ts <= dateTsSec)
-                .reduce((a, d) => a + d.amount, 0) * p.quantite * prices[j].fxRate
-            }
           }
         }
 
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
         const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
-        // Dividendes cumulés intégrés dans nominal et réel (cohérent avec la carte Gains réalisés)
-        result.push({ x: isToday ? 1 : t, nominal: nominal + dividendes, reel: reel + dividendes, nominalNoFX, dividendes, label })
+        result.push({ x: isToday ? 1 : t, nominal, reel, nominalNoFX, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
       }
       // Normaliser le premier point à 0 pour les modes mensuel et hebdomadaire
@@ -1381,12 +1368,7 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
           <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="7" fill="none" stroke={points[points.length-1].nominal >= 0 ? '#2B6B5A' : '#DC2626'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="4" fill={points[points.length-1].nominal >= 0 ? '#2B6B5A' : '#DC2626'} /></>
         </>
       )}
-      {showDividendes && (
-        <path
-          d={points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${px(p.x)} ${py(p.dividendes)}`).join(' ')}
-          fill="none" stroke="#F59E0B" strokeWidth="1.5"
-        />
-      )}
+
       </g>
       {(() => {
         const _vp = visPtsP; const _n = _vp.length
@@ -1405,7 +1387,6 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
         const lines: {label: string; val: number; col: string}[] = []
         if (showNominal) lines.push({ label: 'Nominal', val: hov.nominal, col: hov.nominal >= 0 ? '#4ADE80' : '#F87171' })
         if (showReel) lines.push({ label: 'Réel', val: hov.reel, col: hov.reel >= 0 ? '#6BB8E0' : '#F87171' })
-        if (showDividendes) lines.push({ label: 'Dividendes', val: hov.dividendes, col: '#F59E0B' })
         const bh = 20 + lines.length * 16
         const tx = Math.min(Math.max(px(hov.x), PAD.l + 69), W - PAD.r - 69)
         const refV = showNominal ? hov.nominal : showReel ? hov.reel : 0
@@ -1415,7 +1396,6 @@ function PnLChart({ data, tickerDivs, range, dateFrom, dateTo, bustKey = 0 }: { 
             <line x1={hoverMxPnl ?? px(hov.x)} y1={PAD.t} x2={hoverMxPnl ?? px(hov.x)} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
             {showNominal && <circle cx={px(hov.x)} cy={py(hov.nominal)} r="3.5" fill={hov.nominal >= 0 ? '#2B6B5A' : '#DC2626'} />}
             {showReel && <circle cx={px(hov.x)} cy={py(hov.reel)} r="3" fill={hov.reel >= 0 ? '#1B5C80' : '#DC2626'} />}
-            {showDividendes && hov.dividendes > 0 && <circle cx={px(hov.x)} cy={py(hov.dividendes)} r="3" fill="#F59E0B" />}
             <g transform={`translate(${tx},${ty})`}>
               <rect x="-69" y={-bh} width="138" height={bh + 6} rx="5" fill="#1A2920" stroke="#2D4A38" strokeWidth="0.6" opacity="0.96" />
               <text x="0" y={-(bh - 13)} textAnchor="middle" fontSize="10" fontWeight="500" fill="#B8B3AB">{hov.label}</text>
@@ -3893,7 +3873,6 @@ export default function PortfolioPage() {
     objective: 'modéré',
   })
   const [userId, setUserId] = useState<string | null>(null)
-  const [tickerDivs, setTickerDivs] = useState<Record<string, { dividendTTM: number; dividends: { ts: number; amount: number }[] }>>({})
 
   // Profil courtier actif (basé sur form.courtier)
   const brokerProfile = form.courtier ? BROKER_PROFILES[form.courtier] : null
@@ -4019,52 +3998,6 @@ export default function PortfolioPage() {
     setRefreshing(false)
   }
 
-  // ── Fetch dividendes TTM par ticker ─────────────────────────────────────────
-  const divKey = currentPositions.map(p => p.ticker.toUpperCase()).join(',')
-  useEffect(() => {
-    if (currentPositions.length === 0) { setTickerDivs({}); return }
-    const tickers = [...new Set(currentPositions.map(p => p.ticker.toUpperCase()))].join(',')
-    fetchHistory(tickers)
-      .then((raw: Record<string, { dividendTTM?: number; dividends?: { ts: number; amount: number }[] }>) => {
-        const divs: Record<string, { dividendTTM: number; dividends: { ts: number; amount: number }[] }> = {}
-        for (const [t, v] of Object.entries(raw)) {
-          if (v?.dividendTTM && v.dividendTTM > 0) divs[t] = { dividendTTM: v.dividendTTM, dividends: v.dividends ?? [] }
-        }
-        setTickerDivs(divs)
-      })
-      .catch(() => {})
-  }, [divKey])
-
-  // ── Écrit les totaux de dividendes dans localStorage (pour le simulateur fiscal) ──
-  useEffect(() => {
-    if (Object.keys(tickerDivs).length === 0 || currentPositions.length === 0) return
-    const now = new Date()
-    const curYear  = now.getFullYear()
-    const prevYear = curYear - 1
-    const summary: Record<number, { ch: number; etr: number }> = {
-      [curYear]:  { ch: 0, etr: 0 },
-      [prevYear]: { ch: 0, etr: 0 },
-    }
-    for (const pos of currentPositions) {
-      const entry = tickerDivs[pos.ticker.toUpperCase()]
-      if (!entry?.dividends) continue
-      const isSwiss = pos.ticker.toUpperCase().endsWith('.SW')
-      for (const div of entry.dividends) {
-        const year = new Date(div.ts * 1000).getFullYear()
-        if (year !== curYear && year !== prevYear) continue
-        const amountCHF = div.amount * pos.quantite * (pos.tauxActuelCHF || 1)
-        if (isSwiss) summary[year].ch  += amountCHF
-        else          summary[year].etr += amountCHF
-      }
-    }
-    try {
-      localStorage.setItem('finveria_dividends', JSON.stringify({
-        years:     summary,
-        updatedAt: now.toISOString(),
-      }))
-    } catch {}
-  }, [tickerDivs, currentPositions])
-
   // ── Fetch prix actuel (params explicites pour déclencher sans attendre setState) ──
   async function fetchPrixActuelFor(ticker: string, devise: string) {
     if (!ticker.trim()) return
@@ -4122,7 +4055,7 @@ export default function PortfolioPage() {
     const gainReel = gainCHF - coutCHF * inflation
     const gainPctReel = coutCHF > 0 ? (gainReel / coutCHF) * 100 : 0
     return { ...p, coutCHF, valeurCHF, gainCHF, gainPctCHF, gainDevise, gainPctDevise, impactFX, gainReel, gainPctReel }
-  }), [currentPositions, tickerDivs])
+  }), [currentPositions])
 
   const totals = useMemo(() => {
     // Regrouper par ticker pour appliquer la même logique FIFO que l'onglet Positions
@@ -4160,17 +4093,8 @@ export default function PortfolioPage() {
     const gainReelPct = coutTotal > 0 ? (gainReelTotal / coutTotal) * 100 : 0
     const inflationErosionTotal = gainTotal - gainReelTotal
 
-    // Dividendes : uniquement positions ouvertes (quantite > 0, pas de dateVente)
-    const divCumulTotal = positionsCalc
-      .filter(p => p.quantite > 0 && !p.dateVente)
-      .reduce((s, p) => {
-        const entry = tickerDivs[p.ticker.toUpperCase()]
-        const purchaseTs = new Date(p.dateAchat).getTime() / 1000
-        return s + (entry ? entry.dividends.filter(d => d.ts >= purchaseTs).reduce((a, d) => a + d.amount, 0) * p.quantite * p.tauxActuelCHF : 0)
-      }, 0)
-
-    return { coutTotal, valeurTotal, gainTotal, gainPct, fxTotal, gainReelTotal, gainReelPct, divCumulTotal, inflationErosionTotal }
-  }, [positionsCalc, tickerDivs])
+    return { coutTotal, valeurTotal, gainTotal, gainPct, fxTotal, gainReelTotal, gainReelPct, inflationErosionTotal }
+  }, [positionsCalc])
 
   // ── Groupement par ticker ────────────────────────────────────────────────────
   const [expandedTickers, setExpandedTickers] = useState<Set<string>>(new Set())
@@ -4673,85 +4597,7 @@ export default function PortfolioPage() {
                     return s
                   }, 0)
 
-                  // Dividendes des positions clôturées (FIFO pour les réductions)
-                  type LongWithRemG = (typeof positionsCalc)[0] & { _remaining: number }
-                  const longsByTickerG = new Map<string, LongWithRemG[]>()
-                  positionsCalc
-                    .filter(p => p.quantite > 0 && !p.dateVente)
-                    .sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
-                    .forEach(p => {
-                      if (!longsByTickerG.has(p.ticker)) longsByTickerG.set(p.ticker, [])
-                      longsByTickerG.get(p.ticker)!.push({ ...p, _remaining: p.quantite })
-                    })
-                  let closedDivs = 0
-                  const sortedSalesG = positionsCalc
-                    .filter(p => p.quantite < 0 && p.prixVente !== undefined)
-                    .sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
-                  for (const sale of sortedSalesG) {
-                    let rem = Math.abs(sale.quantite)
-                    const longs = longsByTickerG.get(sale.ticker) ?? []
-                    const entry = tickerDivs[sale.ticker.toUpperCase()]
-                    for (const ll of longs) {
-                      if (rem <= 0) break
-                      if (ll._remaining <= 0) continue
-                      const consumed = Math.min(ll._remaining, rem)
-                      if (entry && ll.dateAchat) {
-                        const fromTs = new Date(ll.dateAchat).getTime() / 1000
-                        const toTs   = new Date(sale.dateAchat).getTime() / 1000
-                        closedDivs += entry.dividends
-                          .filter(d => d.ts >= fromTs && d.ts <= toTs)
-                          .reduce((s, d) => s + d.amount, 0) * consumed * (sale.tauxActuelCHF ?? 1)
-                      }
-                      ll._remaining -= consumed
-                      rem -= consumed
-                    }
-                  }
-                  for (const p of positionsCalc.filter(pp => pp.dateVente && pp.quantite > 0)) {
-                    const entry = tickerDivs[p.ticker.toUpperCase()]
-                    if (!entry) continue
-                    const fromTs = new Date(p.dateAchat).getTime() / 1000
-                    const toTs   = new Date(p.dateVente!).getTime() / 1000
-                    closedDivs += entry.dividends
-                      .filter(d => d.ts >= fromTs && d.ts <= toTs)
-                      .reduce((s, d) => s + d.amount, 0) * p.quantite * (p.tauxActuelCHF ?? 1)
-                  }
-                  const realizedGain = gainVente + closedDivs
-
-                  // Dividendes : positions ouvertes avec quantité FIFO nette (après ventes partielles)
-                  // Construire la FIFO map globale pour toutes les positions
-                  type FifoMapEntry = { id: string; ticker: string; quantite: number; dateAchat: string; tauxActuelCHF: number }
-                  const fifoQtyMap = new Map<string, number>()
-                  const allTickers = [...new Set(positionsCalc.filter(p => p.quantite > 0 && !p.dateVente).map(p => p.ticker.toUpperCase()))]
-                  for (const tk of allTickers) {
-                    const lots = positionsCalc.filter(p => p.ticker.toUpperCase() === tk)
-                    const longs = lots.filter(p => p.quantite > 0 && !p.dateVente).sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
-                    let sold = lots.filter(p => p.quantite < 0 && p.prixVente != null).reduce((s, p) => s + Math.abs(p.quantite), 0)
-                    for (const ll of longs) {
-                      const rem = Math.min(ll.quantite, sold)
-                      fifoQtyMap.set(ll.id, ll.quantite - rem)
-                      sold = Math.max(0, sold - rem)
-                    }
-                  }
-                  const divCumul = positionsCalc.reduce((s, p) => {
-                    if (!(p.quantite > 0 && !p.dateVente)) return s
-                    const qFifo = fifoQtyMap.get(p.id) ?? p.quantite
-                    if (qFifo <= 0) return s
-                    const entry = tickerDivs[p.ticker.toUpperCase()]
-                    if (!entry) return s
-                    const purchaseTs = new Date(p.dateAchat).getTime() / 1000
-                    const cumul = entry.dividends.filter(d => d.ts >= purchaseTs).reduce((a, d) => a + d.amount, 0)
-                    return s + qFifo * cumul * p.tauxActuelCHF
-                  }, 0)
-                  const divTTM = positionsCalc.reduce((s, p) => {
-                    if (!(p.quantite > 0 && !p.dateVente)) return s
-                    const qFifo = fifoQtyMap.get(p.id) ?? p.quantite
-                    if (qFifo <= 0) return s
-                    const entry = tickerDivs[p.ticker.toUpperCase()]
-                    return s + (entry ? qFifo * entry.dividendTTM * p.tauxActuelCHF : 0)
-                  }, 0)
-                  const divYield = totals.valeurTotal > 0 ? (divTTM / totals.valeurTotal) * 100 : 0
-                  const total = realizedGain + divCumul
-                  if (gainVente === 0 && closedDivs === 0 && divCumul <= 0) return null
+                  if (gainVente === 0) return null
                   return (
                     <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
                       <div className="flex items-center gap-1.5 mb-1">
@@ -4760,32 +4606,14 @@ export default function PortfolioPage() {
                           <span className="w-4 h-4 rounded-full bg-[#DDD9D1] dark:bg-[#2a3f52] text-[#5C6880] text-[10px] font-bold flex items-center justify-center cursor-default select-none">?</span>
                           <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-72 z-50 hidden group-hover:block pointer-events-none">
                             <div className="bg-[#1B3050] dark:bg-[#0F1E2C] text-white text-xs rounded-xl p-3 shadow-xl space-y-2">
-                              <p className="font-semibold text-white/90">Gains réalisés + dividendes perçus</p>
-                              <p className="text-white/70 leading-relaxed">Total des gains en cash effectivement encaissés : positions clôturées/réduites + dividendes versés depuis la date d&apos;achat, convertis en CHF.</p>
-                              <div className="border-t border-white/20 pt-2 space-y-1">
-                                <p className="text-white/60 text-[11px]">· Clos/réduit (gain + divid. clôt.) : {realizedGain >= 0 ? '+' : ''}{chf(realizedGain)}</p>
-                                <p className="text-white/60 text-[11px]">· Dividendes positions actives : {divCumul > 0 ? '+' : ''}{chf(divCumul)}</p>
-                                <p className="text-white/60 text-[11px] mt-1">⚠️ Les ETF capitalisants (ex : CSPX, VWCE) réinvestissent leurs dividendes — non comptabilisés ici.</p>
-                              </div>
+                              <p className="font-semibold text-white/90">Gains réalisés</p>
+                              <p className="text-white/70 leading-relaxed">Gain ou perte sur les positions clôturées ou réduites, calculé au prix effectif de vente, converti en CHF.</p>
                               <div className="w-2 h-2 bg-[#1B3050] dark:bg-[#0F1E2C] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
                             </div>
                           </div>
                         </div>
                       </div>
-                      <p className={`text-xl font-bold font-mono ${total >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>{total >= 0 ? '+' : ''}{chf(total)}</p>
-                      <div className="mt-1.5 space-y-0.5">
-                        {realizedGain !== 0 && (
-                          <p className="text-xs font-mono text-[#9E9A93]">
-                            Clos/réduit : <span className={realizedGain >= 0 ? 'text-[#2B6B5A]' : 'text-red-400'}>{realizedGain >= 0 ? '+' : ''}{chf(realizedGain)}</span>
-                          </p>
-                        )}
-                        {divCumul > 0 && (
-                          <p className="text-xs font-mono text-[#9E9A93]">
-                            Dividendes : <span className="text-[#2B6B5A]">+{chf(divCumul)}</span>
-                            {divYield > 0 && <span className="text-[#9E9A93]"> · {divYield.toFixed(2)} % / an</span>}
-                          </p>
-                        )}
-                      </div>
+                      <p className={`text-xl font-bold font-mono ${gainVente >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>{gainVente >= 0 ? '+' : ''}{chf(gainVente)}</p>
                     </div>
                   )
                 })()}
@@ -4859,7 +4687,7 @@ export default function PortfolioPage() {
                     </div>
                   )}
                   {chartMode === 'evol' && <EvolChart data={positionsCalc} showFX={true} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
-                  {chartMode === 'pnl' && <PnLChart data={positionsCalc} tickerDivs={tickerDivs} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
+                  {chartMode === 'pnl' && <PnLChart data={positionsCalc} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
                   {chartMode === 'drawdown' && <DrawdownChart data={positionsCalc} onMaxDrawdown={(pct, date) => setMaxDrawdown({ pct, date })} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
                   <p className="text-xs text-[#9E9A93] mt-2">
                     {chartMode === 'evol'
@@ -5010,11 +4838,6 @@ export default function PortfolioPage() {
                               <td className={`px-4 py-3 font-mono ${clr(gGain)}`}>{gGain >= 0 ? '+' : ''}{chf(gGain)}</td>
                               <td className={`px-4 py-3 font-mono font-semibold ${clr(gPerf)}`}>
                                 <div>{pct(gPerf)}</div>
-                                {(() => {
-                                  const ttmEntry = tickerDivs[ticker.toUpperCase()]
-                                  const divYield = ttmEntry && first.prixActuel > 0 ? (ttmEntry.dividendTTM / first.prixActuel) * 100 : null
-                                  return divYield !== null ? <div className="text-xs text-[#2B6B5A] font-normal">{divYield.toFixed(2)} % div.</div> : null
-                                })()}
                               </td>
                               <td className="px-4 py-3 text-xs text-[#9E9A93]">
                                 {gMaj ? new Date(gMaj).toLocaleString('fr-CH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'}
@@ -5098,7 +4921,7 @@ export default function PortfolioPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-[#DDD9D1] dark:border-[#1e3347]">
-                        {['Position', 'Perf. devise', 'Perf. CHF', 'Impact FX', 'Perf. réelle', 'Dividendes / an'].map(h => (
+                        {['Position', 'Perf. devise', 'Perf. CHF', 'Impact FX', 'Perf. réelle'].map(h => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#5C6880] uppercase tracking-wider">{h}</th>
                         ))}
                       </tr>
@@ -5149,10 +4972,6 @@ export default function PortfolioPage() {
                         const gPerfCHF    = gCout > 0 ? (gGainCHF / gCout) * 100 : 0
                         const gPerfDevise = gCoutDevise > 0 ? (gGainDevise / gCoutDevise) * 100 : 0
                         const gPerfReel   = gCout > 0 ? (gGainReel / gCout) * 100 : 0
-                        const tickerEntry = tickerDivs[ticker]
-                        // Dividendes sur quantité nette ouverte uniquement
-                        const gDivCHF = tickerEntry ? gQteNetA * tickerEntry.dividendTTM * priceRef.tauxActuelCHF : 0
-                        const gDivYld = gVal > 0 && gDivCHF > 0 ? (gDivCHF / gVal) * 100 : 0
                         return (
                           <React.Fragment key={ticker}>
                             <tr className={`hover:bg-[#F5F3EF]/50 dark:hover:bg-[#1B2D3E]/50 transition-colors ${isExpanded ? 'bg-[#F5F3EF]/30 dark:bg-[#1B2D3E]/30' : ''}`}>
@@ -5184,14 +5003,6 @@ export default function PortfolioPage() {
                                 <div>{pct(gPerfReel)}</div>
                                 <div className="text-xs text-[#9E9A93]">{gGainReel >= 0 ? '+' : ''}{chf(gGainReel)}</div>
                               </td>
-                              <td className="px-4 py-3 font-mono">
-                                {gDivCHF > 0 ? (
-                                  <>
-                                    <div className="text-[#2B6B5A] font-semibold">+{chf(gDivCHF)}</div>
-                                    <div className="text-xs text-[#9E9A93]">{gDivYld.toFixed(2)} %</div>
-                                  </>
-                                ) : <span className="text-[#9E9A93]">—</span>}
-                              </td>
                             </tr>
                             {longsAActive.length > 1 && isExpanded && longsAActive.map(p => {
                               // Quantité FIFO résiduelle pour ce lot (peut être < p.quantite si une partie a été vendue)
@@ -5203,8 +5014,6 @@ export default function PortfolioPage() {
                               const pImpactFX   = p.impactFX   * scale
                               const pGainReel   = p.gainReel   * scale
                               const pValCHF     = p.valeurCHF  * scale
-                              const pDivCHF = tickerEntry ? qFifo * tickerEntry.dividendTTM * p.tauxActuelCHF : 0
-                              const pDivYld = pValCHF > 0 && pDivCHF > 0 ? (pDivCHF / pValCHF) * 100 : 0
                               return (
                                 <tr key={p.id} className="bg-[#F5F3EF]/60 dark:bg-[#1B2D3E]/60 text-[#5C6880] dark:text-[#7B8DA6]">
                                   <td className="px-4 py-2 pl-9">
@@ -5225,14 +5034,6 @@ export default function PortfolioPage() {
                                   <td className={`px-4 py-2 font-mono text-xs font-semibold ${clr(p.gainPctReel)}`}>
                                     <div>{pct(p.gainPctReel)}</div>
                                     <div className="text-xs text-[#9E9A93]">{pGainReel >= 0 ? '+' : ''}{chf(pGainReel)}</div>
-                                  </td>
-                                  <td className="px-4 py-2 font-mono text-xs">
-                                    {pDivCHF > 0 ? (
-                                      <>
-                                        <div className="text-[#2B6B5A]">+{chf(pDivCHF)}</div>
-                                        <div className="text-xs text-[#9E9A93]">{pDivYld.toFixed(2)} %</div>
-                                      </>
-                                    ) : <span className="text-[#9E9A93]">—</span>}
                                   </td>
                                 </tr>
                               )
@@ -5379,18 +5180,6 @@ export default function PortfolioPage() {
                                 <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainPct >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
                                   {pct(gainPct)}
                                 </td>
-                                <td className="px-4 py-3 font-mono text-xs">
-                                  {(() => {
-                                    const entry = tickerDivs[sale.ticker.toUpperCase()]
-                                    if (!entry || !dateDebut) return <span className="text-[#9E9A93]">—</span>
-                                    const fromTs = new Date(dateDebut).getTime() / 1000
-                                    const toTs   = new Date(dateOp).getTime() / 1000
-                                    const divAmt = entry.dividends.filter(d => d.ts >= fromTs && d.ts <= toTs).reduce((s, d) => s + d.amount, 0) * splitQty * (sale.tauxActuelCHF ?? 1)
-                                    return divAmt > 0
-                                      ? <span className="text-[#2B6B5A] font-semibold">+{chf(divAmt)}</span>
-                                      : <span className="text-[#9E9A93]">—</span>
-                                  })()}
-                                </td>
                                 <td className="px-4 py-3">
                                   <button
                                     onClick={async () => {
@@ -5461,18 +5250,6 @@ export default function PortfolioPage() {
                               <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainPct >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
                                 {pct(gainPct)}
                               </td>
-                              <td className="px-4 py-3 font-mono text-xs">
-                                {(() => {
-                                  const entry = tickerDivs[p.ticker.toUpperCase()]
-                                  if (!entry) return <span className="text-[#9E9A93]">—</span>
-                                  const fromTs = new Date(p.dateAchat).getTime() / 1000
-                                  const toTs   = new Date(p.dateVente!).getTime() / 1000
-                                  const divAmt = entry.dividends.filter(d => d.ts >= fromTs && d.ts <= toTs).reduce((s, d) => s + d.amount, 0) * p.quantite * (p.tauxActuelCHF ?? 1)
-                                  return divAmt > 0
-                                    ? <span className="text-[#2B6B5A] font-semibold">+{chf(divAmt)}</span>
-                                    : <span className="text-[#9E9A93]">—</span>
-                                })()}
-                              </td>
                               <td className="px-4 py-3">
                                 <button
                                   onClick={async () => {
@@ -5511,51 +5288,6 @@ export default function PortfolioPage() {
                           const venteCHF = qteVendue * pxVente * txVente
                           return s + (venteCHF - coutCHF)
                         }, 0)
-
-                        // ── Dividendes des positions clôturées ────────────────────────────
-                        // Re-run FIFO split to compute per-lot dateDebut for delta rows
-                        type LongWithRem2 = (typeof positions)[0] & { _remaining: number }
-                        const longsByTicker2 = new Map<string, LongWithRem2[]>()
-                        positions
-                          .filter(p => p.quantite > 0 && !p.dateVente)
-                          .sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
-                          .forEach(p => {
-                            if (!longsByTicker2.has(p.ticker)) longsByTicker2.set(p.ticker, [])
-                            longsByTicker2.get(p.ticker)!.push({ ...p, _remaining: p.quantite })
-                          })
-                        let totalDivs = 0
-                        // splitRows (delta lots) — FIFO to get dateDebut per consumed qty
-                        const sortedSales = [...deltaRows].sort((a, b) => a.dateAchat.localeCompare(b.dateAchat))
-                        for (const sale of sortedSales) {
-                          let rem = Math.abs(sale.quantite)
-                          const longs = longsByTicker2.get(sale.ticker) ?? []
-                          const entry = tickerDivs[sale.ticker.toUpperCase()]
-                          for (const ll of longs) {
-                            if (rem <= 0) break
-                            if (ll._remaining <= 0) continue
-                            const consumed = Math.min(ll._remaining, rem)
-                            if (entry && ll.dateAchat) {
-                              const fromTs = new Date(ll.dateAchat).getTime() / 1000
-                              const toTs   = new Date(sale.dateAchat).getTime() / 1000
-                              totalDivs += entry.dividends
-                                .filter(d => d.ts >= fromTs && d.ts <= toTs)
-                                .reduce((s, d) => s + d.amount, 0) * consumed * (sale.tauxActuelCHF ?? 1)
-                            }
-                            ll._remaining -= consumed
-                            rem -= consumed
-                          }
-                        }
-                        // closedRows (dateVente positions)
-                        for (const p of closedRows) {
-                          const entry = tickerDivs[p.ticker.toUpperCase()]
-                          if (!entry) continue
-                          const fromTs = new Date(p.dateAchat).getTime() / 1000
-                          const toTs   = new Date(p.dateVente!).getTime() / 1000
-                          totalDivs += entry.dividends
-                            .filter(d => d.ts >= fromTs && d.ts <= toTs)
-                            .reduce((s, d) => s + d.amount, 0) * p.quantite * (p.tauxActuelCHF ?? 1)
-                        }
-
                         return (
                           <tr className="border-t-2 border-[#DDD9D1] dark:border-[#2a3f52] bg-[#F9F8F5] dark:bg-[#1a2d3d]">
                             <td colSpan={7} className="px-4 py-3 text-xs font-semibold text-[#5C6880] uppercase tracking-wider">
@@ -5564,11 +5296,7 @@ export default function PortfolioPage() {
                             <td className={`px-4 py-3 font-mono text-sm font-bold ${totalGain >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
                               {(totalGain >= 0 ? '+' : '') + chf(totalGain)}
                             </td>
-                            <td className="px-4 py-3" />
-                            <td className={`px-4 py-3 font-mono text-sm font-bold ${totalDivs > 0 ? 'text-[#2B6B5A]' : 'text-[#9E9A93]'}`}>
-                              {totalDivs > 0 ? '+' + chf(totalDivs) : '\u2014'}
-                            </td>
-                            <td className="px-4 py-3" />
+                            <td colSpan={2} className="px-4 py-3" />
                           </tr>
                         )
                       })()}
