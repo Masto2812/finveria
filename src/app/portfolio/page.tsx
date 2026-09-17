@@ -5057,7 +5057,7 @@ export default function PortfolioPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-[#DDD9D1] dark:border-[#1e3347]">
-                        {['Position', 'Date opération', 'Qté vendue', 'Px achat', 'Taux achat', 'Px vente', 'Taux vente', 'Gain CHF', 'Perf.', 'Dividendes', ''].map(h => (
+                        {['Position', 'Date opération', 'Qté vendue', 'Px achat', 'Taux achat', 'Px vente', 'Taux vente', 'Gain CHF', 'Perf.', ''].map(h => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#5C6880] uppercase tracking-wider">{h}</th>
                         ))}
                       </tr>
@@ -5117,7 +5117,7 @@ export default function PortfolioPage() {
                         if (splitRows.length === 0 && closedRows.length === 0) {
                           return (
                             <tr>
-                              <td colSpan={10} className="px-4 py-10 text-center text-sm text-[#9E9A93]">
+                              <td colSpan={9} className="px-4 py-10 text-center text-sm text-[#9E9A93]">
                                 Aucune position clôturée ou réduite pour l&apos;instant.
                               </td>
                             </tr>
