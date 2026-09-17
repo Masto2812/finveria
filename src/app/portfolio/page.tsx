@@ -3969,6 +3969,20 @@ export default function PortfolioPage() {
     try { localStorage.setItem('finveria_portfolio', JSON.stringify(positions)) } catch {}
   }, [positions, userId])
 
+  // ── Purge automatique des lots avec quantité = 0 (créés avant la validation) ─
+  const purgeDoneRef = useRef(false)
+  useEffect(() => {
+    if (purgeDoneRef.current || positions.length === 0) return
+    const zeros = positions.filter(p => p.quantite === 0)
+    if (zeros.length === 0) { purgeDoneRef.current = true; return }
+    purgeDoneRef.current = true
+    setPositions(ps => ps.filter(p => p.quantite !== 0))
+    if (userId) {
+      const supabase = createClient()
+      zeros.forEach(z => { supabase.from('portfolio_positions').delete().eq('id', z.id).eq('user_id', userId).then(() => {}) })
+    }
+  }, [positions, userId])
+
   // ── Positions actives (non fermées) — pour affichage + stats ────────────────
   const todayStr = new Date().toISOString().slice(0, 10)
   const currentPositions = useMemo(
