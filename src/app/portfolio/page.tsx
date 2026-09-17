@@ -4035,6 +4035,36 @@ export default function PortfolioPage() {
       .catch(() => {})
   }, [divKey])
 
+  // ── Écrit les totaux de dividendes dans localStorage (pour le simulateur fiscal) ──
+  useEffect(() => {
+    if (Object.keys(tickerDivs).length === 0 || currentPositions.length === 0) return
+    const now = new Date()
+    const curYear  = now.getFullYear()
+    const prevYear = curYear - 1
+    const summary: Record<number, { ch: number; etr: number }> = {
+      [curYear]:  { ch: 0, etr: 0 },
+      [prevYear]: { ch: 0, etr: 0 },
+    }
+    for (const pos of currentPositions) {
+      const entry = tickerDivs[pos.ticker.toUpperCase()]
+      if (!entry?.dividends) continue
+      const isSwiss = pos.ticker.toUpperCase().endsWith('.SW')
+      for (const div of entry.dividends) {
+        const year = new Date(div.ts * 1000).getFullYear()
+        if (year !== curYear && year !== prevYear) continue
+        const amountCHF = div.amount * pos.quantite * (pos.tauxActuelCHF || 1)
+        if (isSwiss) summary[year].ch  += amountCHF
+        else          summary[year].etr += amountCHF
+      }
+    }
+    try {
+      localStorage.setItem('finveria_dividends', JSON.stringify({
+        years:     summary,
+        updatedAt: now.toISOString(),
+      }))
+    } catch {}
+  }, [tickerDivs, currentPositions])
+
   // ── Fetch prix actuel (params explicites pour déclencher sans attendre setState) ──
   async function fetchPrixActuelFor(ticker: string, devise: string) {
     if (!ticker.trim()) return
