@@ -979,6 +979,7 @@ function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { dat
       </g>
       {(() => {
         const _vp = visPtsE; const _n = _vp.length
+        if (_n === 0) return null
         const _maxL = Math.max(2, Math.min(5, Math.floor(iW / 88)))
         const _step = Math.max(1, Math.ceil(_n / _maxL))
         const _idxs: number[] = [0]
