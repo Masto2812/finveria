@@ -66,10 +66,9 @@ const YF_HEADERS = {
 
 async function fetchFromYahoo(ticker: string, fromDate?: string): Promise<HistEntry | null> {
   const now = Math.floor(Date.now() / 1000)
-  const FIVE_YEARS = 5 * 365 * 24 * 3600
   const period1 = fromDate
     ? Math.floor(new Date(fromDate).getTime() / 1000)
-    : now - FIVE_YEARS
+    : 0
   const period2 = now
 
   const bases = ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']
@@ -77,7 +76,7 @@ async function fetchFromYahoo(ticker: string, fromDate?: string): Promise<HistEn
     try {
       const url = `${base}/v8/finance/chart/${encodeURIComponent(ticker)}` +
         `?period1=${period1}&period2=${period2}&interval=1d&includePrePost=false&events=div`
-      console.log(`[history] Yahoo ${ticker} [${fromDate ?? '5y'} → now] from ${base}`)
+      console.log(`[history] Yahoo ${ticker} [${fromDate ?? 'all'} → now] from ${base}`)
       const res = await fetch(url, { headers: YF_HEADERS, cache: 'no-store', signal: AbortSignal.timeout(15000) })
       if (!res.ok) {
         console.warn(`[history] Yahoo ${ticker} → HTTP ${res.status} from ${base}`)
@@ -157,15 +156,15 @@ async function _doFetchHistory(ticker: string, bust = false): Promise<HistEntry 
       memCacheSet(ticker, stored.entry)
       return stored.entry
     }
-    console.log(`[history] ${ticker} → Supabase stale (${stored.lastDate}), delta fetch…`)
-    const fresh = await fetchFromYahoo(ticker, stored.lastDate)
+    console.log(`[history] ${ticker} → Supabase stale (${stored.lastDate}), full 5y fetch…`)
+    const fresh = await fetchFromYahoo(ticker)  // always 5y to avoid Yahoo truncation on long delta
     if (fresh && fresh.dates.length > 0) {
       const merged = mergeEntries(stored.entry, fresh)
       memCacheSet(ticker, merged)
       sbSet(ticker, merged)
       return merged
     }
-    console.warn(`[history] ${ticker} → delta failed, returning stale data`)
+    console.warn(`[history] ${ticker} → full fetch failed, returning stale data`)
     memCacheSet(ticker, stored.entry)
     return stored.entry
   }

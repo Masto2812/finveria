@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Toutes les classes dark: Tailwind répondent à html.dark (géré par le script bloquant + applyTheme) */
+@custom-variant dark (.dark &);
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -12,15 +15,53 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-inter), system-ui, sans-serif;
+}
+
+/* Finveria design tokens — clair (défaut) */
+:root {
+  --finv-bg: #F5F3EF;
+  --finv-text: #1B3050;
+  --finv-slate: #5C6880;
+  --finv-border: #DDD9D1;
+  --finv-card: #ffffff;
+  --finv-card2: #F5F3EF;
+  --finv-muted: #9AA0AE;
+  --finv-muted2: #C5C1BA;
+  --finv-hero: #1B3050;
+  --finv-cost-line: #C8BC9E;
+}
+
+/* Sombre — déclenché par la classe html.dark */
+html.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  --finv-bg: #0f1923;
+  --finv-text: #e2e8f0;
+  --finv-slate: #94a3b8;
+  --finv-border: #1e3347;
+  --finv-card: #162534;
+  --finv-card2: #1a2e42;
+  --finv-muted: #64748b;
+  --finv-muted2: #475569;
+  --finv-hero: #0a1520;
+  --finv-cost-line: #D4C9B0;
+}
+
+/* Couleurs de badge / statut */
+:root {
+  --finv-badge-green-bg: #E8F5F0;
+  --finv-badge-blue-bg:  #EEF2FF;
+  --finv-badge-amber-bg: #FFF8EC;
+  --finv-badge-red-bg:   #FFF0F0;
+}
+
+html.dark {
+  --finv-badge-green-bg: rgba(43,107,90,0.28);
+  --finv-badge-blue-bg:  rgba(99,120,180,0.22);
+  --finv-badge-amber-bg: rgba(181,130,15,0.22);
+  --finv-badge-red-bg:   rgba(192,57,43,0.22);
 }

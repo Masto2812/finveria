@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import CookieBanner from '@/components/CookieBanner'
 import { Inter } from "next/font/google";
 import "./globals.css";
 
@@ -42,7 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">{children}<CookieBanner /></body>
     </html>
   );
 }

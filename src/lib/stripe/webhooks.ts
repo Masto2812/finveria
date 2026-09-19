@@ -1,3 +1,4 @@
+import Stripe from 'stripe'
 import { stripe } from './client'
 import { createClient } from '@/lib/supabase/server'
 
