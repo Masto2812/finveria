@@ -65,3 +65,35 @@ html.dark {
   --finv-badge-amber-bg: rgba(181,130,15,0.22);
   --finv-badge-red-bg:   rgba(192,57,43,0.22);
 }
+
+/* ─── Responsive mobile ─────────────────────────────────────── */
+@media (max-width: 767px) {
+  .hero-grid {
+    grid-template-columns: 1fr !important;
+    gap: 40px !important;
+  }
+  .features-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .why-grid {
+    grid-template-columns: 1fr !important;
+    gap: 40px !important;
+  }
+  .pricing-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .cta-buttons {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .cta-buttons a {
+    text-align: center !important;
+  }
+  .beta-banner {
+    flex-direction: column !important;
+    gap: 16px !important;
+  }
+  .beta-banner a {
+    text-align: center !important;
+  }
+}

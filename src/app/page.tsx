@@ -20,7 +20,7 @@ export default function Home() {
       {/* HERO */}
       <section style={{ background: 'var(--finv-hero)', padding: '88px 0 80px', position: 'relative', overflow: 'hidden' }}>
         <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(ellipse 70% 60% at 65% 50%, rgba(43,107,90,0.2) 0%, transparent 70%)', pointerEvents: 'none' }} />
-        <div style={{ maxWidth: 1152, margin: '0 auto', padding: '0 16px', position: 'relative', display: 'grid', gridTemplateColumns: '1fr 400px', gap: 72, alignItems: 'center' }}>
+        <div className="hero-grid" style={{ maxWidth: 1152, margin: '0 auto', padding: '0 16px', position: 'relative', display: 'grid', gridTemplateColumns: '1fr 400px', gap: 72, alignItems: 'center' }}>
           <div>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: 'rgba(43,107,90,0.25)', border: '1px solid rgba(43,107,90,0.4)', borderRadius: 20, padding: '4px 14px', marginBottom: 28 }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(245,243,239,0.8)', letterSpacing: 0.2 }}>🇨🇭 Conçu pour les investisseurs en Suisse</span>
@@ -89,7 +89,7 @@ export default function Home() {
             </h2>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24 }}>
+          <div className="features-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24 }}>
 
             {/* Comparateur */}
             <Link href="/comparateur" style={{ background: 'var(--finv-card)', borderRadius: 16, border: '1px solid var(--finv-border)', padding: 32, textDecoration: 'none', display: 'flex', flexDirection: 'column' }}>
@@ -151,7 +151,7 @@ export default function Home() {
 
       {/* POURQUOI FINVERIA */}
       <section style={{ padding: '72px 0', background: 'var(--finv-card)', borderTop: '1px solid var(--finv-border)', borderBottom: '1px solid var(--finv-border)' }}>
-        <div style={{ maxWidth: 1152, margin: '0 auto', padding: '0 16px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 80, alignItems: 'center' }}>
+        <div className="why-grid" style={{ maxWidth: 1152, margin: '0 auto', padding: '0 16px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 80, alignItems: 'center' }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 1, textTransform: 'uppercase', color: '#2B6B5A', marginBottom: 16 }}>Pourquoi Finveria</div>
             <h2 style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", fontSize: 'clamp(28px,3.5vw,38px)', fontWeight: 700, color: 'var(--finv-text)', marginBottom: 20, lineHeight: 1.2 }}>
@@ -192,7 +192,7 @@ export default function Home() {
             <p style={{ fontSize: 16, color: 'var(--finv-slate)', maxWidth: '52ch', margin: '0 auto' }}>Le comparateur est accessible sans compte. Le simulateur est gratuit après inscription. Le portefeuille est en Premium.</p>
           </div>
 
-          <div style={{ background: 'var(--finv-hero)', borderRadius: 14, padding: '18px 24px', marginBottom: 32, maxWidth: 960, margin: '0 auto 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+          <div className="beta-banner" style={{ background: 'var(--finv-hero)', borderRadius: 14, padding: '18px 24px', marginBottom: 32, maxWidth: 960, margin: '0 auto 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: '#F5F3EF', marginBottom: 4 }}>🚀 Bêta fermée — 50 places disponibles</div>
               <div style={{ fontSize: 13, color: 'rgba(245,243,239,0.6)', lineHeight: 1.5 }}>Accès complet aux 3 outils pendant 3 mois gratuits. Ensuite, essai Premium 14 jours offerts.</div>
@@ -200,7 +200,7 @@ export default function Home() {
             <a href="/signup" style={{ flexShrink: 0, background: '#2B6B5A', color: 'white', borderRadius: 8, padding: '10px 18px', fontWeight: 600, fontSize: 13, textDecoration: 'none' }}>Rejoindre →</a>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 20, maxWidth: 960, margin: '0 auto' }}>
+          <div className="pricing-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 20, maxWidth: 960, margin: '0 auto' }}>
             {/* Gratuit sans compte */}
             <div style={{ background: 'var(--finv-bg)', borderRadius: 16, padding: 28, border: '1px solid var(--finv-border)', display: 'flex', flexDirection: 'column' }}>
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: 'var(--finv-slate)', marginBottom: 12 }}>Sans compte</div>
@@ -284,7 +284,7 @@ export default function Home() {
           <p style={{ fontSize: 16, color: 'var(--finv-slate)', marginBottom: 36, lineHeight: 1.7 }}>
             Créez votre compte pour accéder aux outils Finveria.
           </p>
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+          <div className="cta-buttons" style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
             <Link href="/comparateur" style={{ background: 'var(--finv-card)', color: 'var(--finv-text)', border: '1px solid var(--finv-border)', borderRadius: 9, padding: '13px 28px', fontWeight: 600, fontSize: 14, textDecoration: 'none' }}>Comparer les courtiers</Link>
             <Link href="/simulateur"  style={{ background: 'var(--finv-card)', color: 'var(--finv-text)', border: '1px solid var(--finv-border)', borderRadius: 9, padding: '13px 28px', fontWeight: 600, fontSize: 14, textDecoration: 'none' }}>Simuler mon impôt</Link>
             <Link href="/portfolio"   style={{ background: 'var(--finv-card)', color: 'var(--finv-text)', border: '1px solid var(--finv-border)', borderRadius: 9, padding: '13px 28px', fontWeight: 600, fontSize: 14, textDecoration: 'none' }}>Mon portfolio</Link>
