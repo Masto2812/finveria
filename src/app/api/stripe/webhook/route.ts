@@ -18,5 +18,3 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// Désactiver le parsing automatique du body (nécessaire pour Stripe)
-export const config = { api: { bodyParser: false } }

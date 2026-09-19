@@ -3503,7 +3503,7 @@ function FormDatePicker({ value, onChange, min, max }: {
               ) : (
                 <>
                   <button type="button" onClick={() => setPickerMode(m => m === 'month' ? null : 'month')}
-                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${pickerMode === 'month' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${(pickerMode as string) === 'month' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
                     {MONTHS_FR[viewMonth]}
                   </button>
                   <button type="button" onClick={() => { setPickerMode(m => m === 'year' ? null : 'year'); setYearPage(Math.floor(viewYear / 12) * 12) }}
@@ -3678,7 +3678,7 @@ function DateRangePicker({
   const nextMonth = () => {
     const nm = viewMonth === 11 ? 0 : viewMonth + 1
     const ny = viewMonth === 11 ? viewYear + 1 : viewYear
-    if (new Date(ny, nm, 1) > today) return
+    if (new Date(ny, nm, 1) > todayLocal) return
     if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y+1) } else { setViewMonth(m => m+1) }
   }
   const label = dateFrom && dateTo
@@ -3722,7 +3722,7 @@ function DateRangePicker({
               ) : (
                 <>
                   <button onClick={() => setPickerMode(m => m === 'month' ? null : 'month')}
-                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${pickerMode === 'month' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${(pickerMode as string) === 'month' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
                     {MONTHS_FR[viewMonth]}
                   </button>
                   <button onClick={() => { setPickerMode(m => m === 'year' ? null : 'year'); setYearPage(Math.floor(viewYear / 12) * 12) }}
@@ -3749,7 +3749,7 @@ function DateRangePicker({
           {pickerMode === 'month' && (
             <div className="grid grid-cols-3 gap-1 mb-1">
               {MONTHS_SHORT.map((m, i) => {
-                const isFuture = new Date(viewYear, i, 1) > today
+                const isFuture = new Date(viewYear, i, 1) > todayLocal
                 const isActive = i === viewMonth
                 return (
                   <button key={i} disabled={isFuture}
@@ -3964,7 +3964,7 @@ export default function PortfolioPage() {
               horizon: Number(prof.horizon),
               loss: Number(prof.loss) as 10 | 20 | 30 | 40 | 50,
               liquidity: prof.liquidity as 'haute' | 'moyenne' | 'faible',
-              objective: prof.objective as 'défensif' | 'modéré' | 'croissance' | 'agressif',
+              objective: prof.objective as 'défensif' | 'modéré' | 'croissance' | 'agressif' | 'inflation',
             })
           }
         } else {
