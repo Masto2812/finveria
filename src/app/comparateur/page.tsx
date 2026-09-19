@@ -450,7 +450,7 @@ export default function ComparateurPage() {
                 {/* Détail */}
                 {state.open === b.id && (
                   <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--finv-border)', paddingTop: '1.5rem' }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.5rem' }}>
                       <div>
                         <div style={{ fontWeight: 600, color: 'var(--finv-text)', marginBottom: '0.75rem' }}>✅ Points forts</div>
                         {b.pros.map((p, i) => <div key={i} style={{ fontSize: '0.85rem', color: '#2B6B5A', marginBottom: '0.3rem' }}>+ {p}</div>)}

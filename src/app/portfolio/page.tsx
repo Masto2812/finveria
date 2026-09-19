@@ -3160,7 +3160,7 @@ function InvestorProfileSection({
                   {mcSVG()}
                 </div>
                 {mcBands.length > 0 && (
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     {tile('Résultat médian', `×${mcBands[mcBands.length - 1].p50.toFixed(2)}`, `Dans 1 scénario sur 2, votre portefeuille atteint au moins ce multiple à 20 ans. C'est le résultat "typique".`, '#2B6B5A')}
                     {tile('Scénario favorable', `×${mcBands[mcBands.length - 1].p75.toFixed(2)}`, `Dans 1 scénario sur 4, votre portefeuille fait encore mieux. C'est un bon résultat, sans être exceptionnel.`)}
                     {tile('Scénario défavorable', `×${mcBands[mcBands.length - 1].p25.toFixed(2)}`, `Dans 3 scénarios sur 4, votre portefeuille fait mieux que ça. C'est le plancher probable hors crise majeure et durable.`, '#F97316')}
@@ -3218,7 +3218,7 @@ function InvestorProfileSection({
                   {frontierSVG()}
                 </div>
                 {frontier.maxSharpe && frontier.minSigma && (
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     {tile('Votre Sharpe', frontier.current ? frontier.current.sh.toFixed(3) : sharpe.toFixed(3), `E(R) ${(erEff*100).toFixed(1)} % / σ ${(sigmaEff*100).toFixed(1)} %${showFX && histStats ? ' · CHF' : ''}`, '#EF4444')}
                     {tile('Max Sharpe', frontier.maxSharpe.sh.toFixed(3), `E(R) ${(frontier.maxSharpe.r * 100).toFixed(1)} % / σ ${(frontier.maxSharpe.s * 100).toFixed(1)} %`, '#F59E0B')}
                     {tile('Min σ', `${(frontier.minSigma.s * 100).toFixed(1)} %`, `E(R) ${(frontier.minSigma.r * 100).toFixed(1)} %`, '#3B82F6')}
@@ -4524,7 +4524,7 @@ export default function PortfolioPage() {
 
       <div className="max-w-6xl mx-auto px-4 py-10">
         <div className="mb-8">
-          <div className="flex items-center gap-3 mb-1">
+          <div className="flex flex-wrap items-center gap-3 mb-1">
             <h1 className="text-2xl font-bold tracking-tight">Mon portfolio</h1>
             <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-[#B5820F]/10 text-[#B5820F] border border-[#B5820F]/20">Premium</span>
           </div>
@@ -4535,7 +4535,7 @@ export default function PortfolioPage() {
               {' '}· Données Yahoo Finance (délai ~15 min)
             </p>
           )}
-          <div className="flex gap-2 mt-4">
+          <div className="flex flex-wrap gap-2 mt-4">
             {!isEmpty && (
               <>
                 <button onClick={exportCSV}
@@ -4743,13 +4743,13 @@ export default function PortfolioPage() {
                   </p>
                 </div>
                 <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
-                  <div className="flex gap-6">
+                  <div className="flex flex-col md:flex-row gap-6">
                     <div className="flex-1 min-w-0">
                       <h3 className="text-sm font-semibold mb-4">Allocation par catégorie</h3>
                       <AllocChart data={positionsCalc} />
                     </div>
-                    <div className="w-px bg-[#DDD9D1] dark:bg-[#1e3347] self-stretch flex-shrink-0" />
-                    <div className="w-56 flex-shrink-0 flex flex-col gap-3 justify-center">
+                    <div className="hidden md:block w-px bg-[#DDD9D1] dark:bg-[#1e3347] self-stretch flex-shrink-0" />
+                    <div className="w-full md:w-56 md:flex-shrink-0 flex flex-col gap-3 justify-center">
                       <div className="flex items-center justify-between">
                         <h3 className="text-sm font-semibold text-[#1B3050] dark:text-white">Profil d&apos;investisseur</h3>
                         <a href="/profil?tab=investisseur" className="flex items-center gap-1 text-xs font-medium text-[#2B6B5A] hover:underline">
@@ -4805,7 +4805,7 @@ export default function PortfolioPage() {
 
 
             <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] overflow-hidden">
-              <div className="flex items-center border-b border-[#DDD9D1] dark:border-[#1e3347]">
+              <div className="flex items-center border-b border-[#DDD9D1] dark:border-[#1e3347] overflow-x-auto">
                 {(['positions', 'analyse', 'cloturees'] as const).map(tab => (
                   <button key={tab} onClick={() => setActiveTab(tab)}
                     className={`px-5 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${activeTab === tab

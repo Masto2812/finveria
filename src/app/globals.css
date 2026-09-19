@@ -97,3 +97,31 @@ html.dark {
     text-align: center !important;
   }
 }
+
+/* ─── Portfolio mobile ──────────────────────────────────────── */
+@media (max-width: 767px) {
+  /* Tables des positions : colonnes moins importantes cachées */
+  .portfolio-table th:nth-child(2),
+  .portfolio-table td:nth-child(2),
+  .portfolio-table th:nth-child(7),
+  .portfolio-table td:nth-child(7) {
+    display: none;
+  }
+
+  /* Réduire padding des cellules tables */
+  .portfolio-table th,
+  .portfolio-table td {
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+  }
+
+  /* Cards de stats : toujours 1 colonne */
+  .grid.grid-cols-2.gap-2 {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Analyse FX colonnes */
+  .grid.grid-cols-2.gap-3 {
+    grid-template-columns: 1fr !important;
+  }
+}
