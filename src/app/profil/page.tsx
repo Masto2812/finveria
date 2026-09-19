@@ -111,7 +111,7 @@ export default function ProfilPage() {
       const parts = fullName.trim().split(' ')
       const prenom = parts[0] ?? ''
       const nom = parts.slice(1).join(' ')
-      const notifEnabled = u.user_metadata?.notifications_email !== false
+      const notifEnabled = (u.user_metadata?.notifications_email as unknown) !== false
       setProfile(p => ({ ...p, email: u.email ?? '', prenom: p.prenom || prenom, nom: p.nom || nom, notifications: notifEnabled }))
       // Load avatar from user_metadata
       const avatarPath = u.user_metadata?.avatar_url

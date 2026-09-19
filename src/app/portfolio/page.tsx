@@ -57,10 +57,10 @@ function inflationCumulee(dateAchat: string): number {
 
 // ─── Shared price cache ──────────────────────────────────────────────────────
 const priceCache = new Map<string, { price: number; fxRate: number }>()
-const historyCache = new Map<string, unknown>()
-async function fetchHistory(tickers: string, bust = false): Promise<Record<string, unknown>> {
+const historyCache = new Map<string, Record<string, { dates: string[]; closes: number[] }>>()
+async function fetchHistory(tickers: string, bust = false): Promise<Record<string, { dates: string[]; closes: number[] }>> {
   const cacheKey = tickers + (bust ? ':bust' : '')
-  if (!bust && historyCache.has(tickers)) return historyCache.get(tickers) as Record<string, unknown>
+  if (!bust && historyCache.has(tickers)) return historyCache.get(tickers)!
   const url = `/api/history?tickers=${encodeURIComponent(tickers)}${bust ? '&bust=1' : ''}`
   const res = await fetch(url)
   const data = await res.json()

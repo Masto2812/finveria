@@ -19,7 +19,7 @@ export async function handleWebhook(body: string, signature: string) {
         .from('subscriptions')
         .update({
           status: subscription.status,
-          current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+          current_period_end: new Date(((subscription as unknown as { current_period_end: number }).current_period_end ?? 0) * 1000).toISOString(),
           plan: subscription.status === 'active' ? 'premium' : 'free',
         })
         .eq('stripe_subscription_id', subscription.id)
