@@ -3507,7 +3507,7 @@ function FormDatePicker({ value, onChange, min, max }: {
                     {MONTHS_FR[viewMonth]}
                   </button>
                   <button type="button" onClick={() => { setPickerMode(m => m === 'year' ? null : 'year'); setYearPage(Math.floor(viewYear / 12) * 12) }}
-                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${pickerMode === 'year' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${(pickerMode as string) === 'year' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
                     {viewYear}
                   </button>
                 </>
@@ -3726,7 +3726,7 @@ function DateRangePicker({
                     {MONTHS_FR[viewMonth]}
                   </button>
                   <button onClick={() => { setPickerMode(m => m === 'year' ? null : 'year'); setYearPage(Math.floor(viewYear / 12) * 12) }}
-                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${pickerMode === 'year' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${(pickerMode as string) === 'year' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
                     {viewYear}
                   </button>
                 </>
@@ -3964,7 +3964,7 @@ export default function PortfolioPage() {
               horizon: Number(prof.horizon),
               loss: Number(prof.loss) as 10 | 20 | 30 | 40 | 50,
               liquidity: prof.liquidity as 'haute' | 'moyenne' | 'faible',
-              objective: prof.objective as 'défensif' | 'modéré' | 'croissance' | 'agressif' | 'inflation',
+              objective: (prof.objective === 'défensif' ? 'inflation' : prof.objective) as 'inflation' | 'modéré' | 'croissance' | 'agressif',
             })
           }
         } else {
