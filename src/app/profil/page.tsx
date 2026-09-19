@@ -1,7 +1,7 @@
 'use client'
 import Footer from '@/components/Footer'
 import Header from '@/components/Header'
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
@@ -37,7 +37,7 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
   )
 }
 
-export default function ProfilPage() {
+function ProfilPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const supabase = useMemo(() => createClient(), [])
@@ -845,5 +845,14 @@ export default function ProfilPage() {
         </div>
       )}
     </div>
+  )
+}
+
+
+export default function ProfilPage() {
+  return (
+    <Suspense>
+      <ProfilPageInner />
+    </Suspense>
   )
 }
