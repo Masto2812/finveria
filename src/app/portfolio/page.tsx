@@ -194,56 +194,63 @@ const BROKER_PROFILES: Record<string, BrokerProfile> = {
 const BROKERS = ['', ...Object.keys(BROKER_PROFILES)]
 
 const CATEGORY_SUGGESTIONS: Record<string, { ticker: string; nom: string; bourse: string; type: string; devise: string; popular?: boolean }[]> = {
+  // Plan gratuit Twelve Data : actions US uniquement
+  // Plan payant → ajouter : { ticker: 'NESN:SIX', nom: 'Nestlé', bourse: 'SIX', type: 'equity', devise: 'CHF' }
   'Actions': [
-    { ticker: 'AAPL',    nom: 'Apple',           bourse: 'NASDAQ',   type: 'equity', devise: 'USD', popular: true },
-    { ticker: 'MSFT',    nom: 'Microsoft',        bourse: 'NASDAQ',   type: 'equity', devise: 'USD', popular: true },
-    { ticker: 'NVDA',    nom: 'NVIDIA',           bourse: 'NASDAQ',   type: 'equity', devise: 'USD', popular: true },
-    { ticker: 'TSLA',    nom: 'Tesla',            bourse: 'NASDAQ',   type: 'equity', devise: 'USD', popular: true },
-    { ticker: 'GOOGL',   nom: 'Alphabet',         bourse: 'NASDAQ',   type: 'equity', devise: 'USD' },
-    { ticker: 'AMZN',    nom: 'Amazon',           bourse: 'NASDAQ',   type: 'equity', devise: 'USD' },
-    { ticker: 'NESN.SW', nom: 'Nestlé',           bourse: 'SIX',      type: 'equity', devise: 'CHF' },
-    { ticker: 'ROG.SW',  nom: 'Roche',            bourse: 'SIX',      type: 'equity', devise: 'CHF' },
-    { ticker: 'NOVN.SW', nom: 'Novartis',         bourse: 'SIX',      type: 'equity', devise: 'CHF' },
-    { ticker: 'ASML',    nom: 'ASML',             bourse: 'NASDAQ',   type: 'equity', devise: 'USD' },
-    { ticker: 'MC.PA',   nom: 'LVMH',             bourse: 'Euronext', type: 'equity', devise: 'EUR' },
+    { ticker: 'AAPL',  nom: 'Apple',     bourse: 'NASDAQ', type: 'equity', devise: 'USD', popular: true },
+    { ticker: 'MSFT',  nom: 'Microsoft', bourse: 'NASDAQ', type: 'equity', devise: 'USD', popular: true },
+    { ticker: 'NVDA',  nom: 'NVIDIA',    bourse: 'NASDAQ', type: 'equity', devise: 'USD', popular: true },
+    { ticker: 'TSLA',  nom: 'Tesla',     bourse: 'NASDAQ', type: 'equity', devise: 'USD', popular: true },
+    { ticker: 'GOOGL', nom: 'Alphabet',  bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'AMZN',  nom: 'Amazon',    bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'META',  nom: 'Meta',      bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'ASML',  nom: 'ASML',      bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'JPM',   nom: 'JPMorgan',  bourse: 'NYSE',   type: 'equity', devise: 'USD' },
+    { ticker: 'V',     nom: 'Visa',      bourse: 'NYSE',   type: 'equity', devise: 'USD' },
   ],
+  // Plan gratuit : ETF US uniquement
+  // Plan payant → ajouter : VWCE.DE, IWDA.L, CSPX.L, SMIM.SW etc.
   'ETF': [
-    { ticker: 'VWCE.DE', nom: 'Vanguard All-World',   bourse: 'XETRA',  type: 'etf', devise: 'EUR', popular: true },
-    { ticker: 'IWDA.L',  nom: 'iShares MSCI World',   bourse: 'LSE',    type: 'etf', devise: 'USD', popular: true },
-    { ticker: 'CSPX.L',  nom: 'iShares S&P 500',      bourse: 'LSE',    type: 'etf', devise: 'USD', popular: true },
-    { ticker: 'SPY',     nom: 'SPDR S&P 500',          bourse: 'NYSE',   type: 'etf', devise: 'USD' },
-    { ticker: 'QQQ',     nom: 'Invesco Nasdaq 100',    bourse: 'NASDAQ', type: 'etf', devise: 'USD' },
-    { ticker: 'VT',      nom: 'Vanguard Total World',  bourse: 'NYSE',   type: 'etf', devise: 'USD' },
-    { ticker: 'SMIM.SW', nom: 'iShares SMI Mid',       bourse: 'SIX',    type: 'etf', devise: 'CHF' },
-    { ticker: 'SMMCHA.SW', nom: 'UBS SMI',             bourse: 'SIX',    type: 'etf', devise: 'CHF' },
+    { ticker: 'SPY', nom: 'SPDR S&P 500',            bourse: 'NYSE',   type: 'etf', devise: 'USD', popular: true },
+    { ticker: 'QQQ', nom: 'Invesco Nasdaq 100',       bourse: 'NASDAQ', type: 'etf', devise: 'USD', popular: true },
+    { ticker: 'VT',  nom: 'Vanguard Total World',     bourse: 'NYSE',   type: 'etf', devise: 'USD', popular: true },
+    { ticker: 'VTI', nom: 'Vanguard US Total Market', bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'VOO', nom: 'Vanguard S&P 500',         bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'IWM', nom: 'iShares Russell 2000',     bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'EFA', nom: 'iShares MSCI EAFE',        bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'VWO', nom: 'Vanguard Emerging Markets',bourse: 'NYSE',   type: 'etf', devise: 'USD' },
   ],
+  // ETF obligataires US (NYSE/NASDAQ, couverts plan gratuit)
   'ETF Oblig.': [
-    { ticker: 'TLT',       nom: 'iShares 20Y US Treasury',   bourse: 'NASDAQ', type: 'bond', devise: 'USD', popular: true },
-    { ticker: 'AGG',       nom: 'iShares US Aggregate Bond',  bourse: 'NYSE',   type: 'bond', devise: 'USD', popular: true },
-    { ticker: 'AGGH.L',    nom: 'iShares Global Aggregate',   bourse: 'LSE',    type: 'bond', devise: 'USD' },
-    { ticker: 'IBTE.L',    nom: 'iShares EUR Govt Bond',      bourse: 'LSE',    type: 'bond', devise: 'EUR' },
-    { ticker: 'CSBGC7.SW', nom: 'iShares CHF Corp Bond',      bourse: 'SIX',    type: 'bond', devise: 'CHF' },
+    { ticker: 'TLT', nom: 'iShares 20Y US Treasury',   bourse: 'NASDAQ', type: 'bond', devise: 'USD', popular: true },
+    { ticker: 'AGG', nom: 'iShares US Aggregate Bond',  bourse: 'NYSE',   type: 'bond', devise: 'USD', popular: true },
+    { ticker: 'BND', nom: 'Vanguard Total Bond Market', bourse: 'NASDAQ', type: 'bond', devise: 'USD' },
+    { ticker: 'LQD', nom: 'iShares Investment Grade',   bourse: 'NYSE',   type: 'bond', devise: 'USD' },
+    { ticker: 'HYG', nom: 'iShares High Yield Corp',    bourse: 'NYSE',   type: 'bond', devise: 'USD' },
   ],
+  // Métaux précieux spot (disponibles plan gratuit via paires forex Twelve Data)
+  // Plan payant → décommenter les futures : GC1!, CL1!, NG1!
   'Matières premières': [
-    { ticker: 'GC=F', nom: 'Or (Futures)',           bourse: 'COMEX', type: 'future', devise: 'USD', popular: true },
-    { ticker: 'CL=F', nom: 'Pétrole WTI (Futures)',  bourse: 'NYMEX', type: 'future', devise: 'USD', popular: true },
-    { ticker: 'SI=F', nom: 'Argent (Futures)',        bourse: 'COMEX', type: 'future', devise: 'USD' },
-    { ticker: 'NG=F', nom: 'Gaz Naturel (Futures)',   bourse: 'NYMEX', type: 'future', devise: 'USD' },
-    { ticker: 'HG=F', nom: 'Cuivre (Futures)',        bourse: 'COMEX', type: 'future', devise: 'USD' },
-    { ticker: 'ZW=F', nom: 'Blé (Futures)',           bourse: 'CBOT',  type: 'future', devise: 'USD' },
+    { ticker: 'XAU/USD', nom: 'Or Spot',      bourse: 'Forex', type: 'forex', devise: 'USD', popular: true },
+    { ticker: 'XAG/USD', nom: 'Argent Spot',  bourse: 'Forex', type: 'forex', devise: 'USD', popular: true },
+    { ticker: 'XPT/USD', nom: 'Platine Spot', bourse: 'Forex', type: 'forex', devise: 'USD' },
+    { ticker: 'XPD/USD', nom: 'Palladium Spot', bourse: 'Forex', type: 'forex', devise: 'USD' },
   ],
+  // Crypto (format Twelve Data : BASE/QUOTE)
   'Crypto': [
-    { ticker: 'BTC-USD', nom: 'Bitcoin',  bourse: 'CoinGecko', type: 'cryptocurrency', devise: 'USD', popular: true },
-    { ticker: 'ETH-USD', nom: 'Ethereum', bourse: 'CoinGecko', type: 'cryptocurrency', devise: 'USD', popular: true },
-    { ticker: 'SOL-USD', nom: 'Solana',   bourse: 'CoinGecko', type: 'cryptocurrency', devise: 'USD' },
-    { ticker: 'BNB-USD', nom: 'BNB',      bourse: 'CoinGecko', type: 'cryptocurrency', devise: 'USD' },
-    { ticker: 'XRP-USD', nom: 'XRP',      bourse: 'CoinGecko', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'BTC/USD', nom: 'Bitcoin',  bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD', popular: true },
+    { ticker: 'ETH/USD', nom: 'Ethereum', bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD', popular: true },
+    { ticker: 'SOL/USD', nom: 'Solana',   bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'BNB/USD', nom: 'BNB',      bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'XRP/USD', nom: 'XRP',      bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
   ],
+  // Forex (format Twelve Data : BASE/QUOTE)
   'Monnaies': [
-    { ticker: 'EURUSD=X', nom: 'EUR / USD', bourse: 'Forex', type: 'currency', devise: 'USD', popular: true },
-    { ticker: 'USDCHF=X', nom: 'USD / CHF', bourse: 'Forex', type: 'currency', devise: 'CHF', popular: true },
-    { ticker: 'EURCHF=X', nom: 'EUR / CHF', bourse: 'Forex', type: 'currency', devise: 'CHF' },
-    { ticker: 'GBPCHF=X', nom: 'GBP / CHF', bourse: 'Forex', type: 'currency', devise: 'CHF' },
+    { ticker: 'EUR/USD', nom: 'EUR / USD', bourse: 'Forex', type: 'currency', devise: 'USD', popular: true },
+    { ticker: 'USD/CHF', nom: 'USD / CHF', bourse: 'Forex', type: 'currency', devise: 'CHF', popular: true },
+    { ticker: 'EUR/CHF', nom: 'EUR / CHF', bourse: 'Forex', type: 'currency', devise: 'CHF' },
+    { ticker: 'GBP/CHF', nom: 'GBP / CHF', bourse: 'Forex', type: 'currency', devise: 'CHF' },
+    { ticker: 'GBP/USD', nom: 'GBP / USD', bourse: 'Forex', type: 'currency', devise: 'USD' },
   ],
 }
 
@@ -286,11 +293,20 @@ const KNOWN_NAMES: Record<string, string> = {
   'GC=F': 'Or (Futures)', 'CL=F': 'Pétrole WTI (Futures)',
   'NG=F': 'Gaz naturel (Futures)', 'BZ=F': 'Brent (Futures)',
   // Crypto
+  // Crypto — format Twelve Data (BASE/QUOTE)
+  'BTC/USD': 'Bitcoin', 'ETH/USD': 'Ethereum', 'BNB/USD': 'BNB',
+  'SOL/USD': 'Solana', 'XRP/USD': 'XRP', 'ADA/USD': 'Cardano',
+  'DOGE/USD': 'Dogecoin', 'AVAX/USD': 'Avalanche', 'DOT/USD': 'Polkadot',
+  'MATIC/USD': 'Polygon', 'LINK/USD': 'Chainlink', 'UNI/USD': 'Uniswap',
+  // Crypto — ancien format Yahoo (rétrocompatibilité)
   'BTC-USD': 'Bitcoin', 'ETH-USD': 'Ethereum', 'BNB-USD': 'BNB',
   'SOL-USD': 'Solana', 'XRP-USD': 'XRP', 'ADA-USD': 'Cardano',
-  'DOGE-USD': 'Dogecoin', 'AVAX-USD': 'Avalanche', 'DOT-USD': 'Polkadot',
-  'MATIC-USD': 'Polygon', 'LINK-USD': 'Chainlink', 'UNI-USD': 'Uniswap',
-  // Monnaies
+  // Monnaies — format Twelve Data
+  'USD/CHF': 'USD / CHF', 'EUR/CHF': 'EUR / CHF', 'GBP/CHF': 'GBP / CHF',
+  'EUR/USD': 'EUR / USD', 'GBP/USD': 'GBP / USD', 'USD/JPY': 'USD / JPY',
+  // Métaux précieux spot — format Twelve Data
+  'XAU/USD': 'Or Spot', 'XAG/USD': 'Argent Spot', 'XPT/USD': 'Platine Spot', 'XPD/USD': 'Palladium Spot',
+  // Monnaies — ancien format Yahoo (rétrocompatibilité)
   'USDCHF=X': 'USD / CHF', 'EURCHF=X': 'EUR / CHF', 'GBPCHF=X': 'GBP / CHF',
   'EURUSD=X': 'EUR / USD', 'GBPUSD=X': 'GBP / USD', 'USDJPY=X': 'USD / JPY',
 }
@@ -368,10 +384,15 @@ function TickerAutocomplete({
         raw = raw.map(r => BOND_ETF_TICKERS.has(r.ticker) ? { ...r, type: 'bond' } : r)
         // Filtrage par profil courtier
         // r.type est un label affichage Yahoo (ex: "Equity", "ETF", "Cryptocurrency")
+        // Mapping types Twelve Data (libellés français/anglais) → types internes broker
         const TYPE_DISPLAY_MAP: Record<string, string> = {
-          'equity': 'EQUITY', 'etf': 'ETF', 'cryptocurrency': 'CRYPTOCURRENCY',
-          'future': 'FUTURE', 'futures': 'FUTURE', 'mutual fund': 'MUTUALFUND', 'currency': 'CURRENCY',
-          'mutualfund': 'MUTUALFUND', 'bond': 'BOND',
+          // Types Twelve Data (via /api/search)
+          'action': 'EQUITY', 'etf': 'ETF', 'cryptocurrency': 'CRYPTOCURRENCY',
+          'crypto': 'CRYPTOCURRENCY', 'forex': 'CURRENCY', 'currency': 'CURRENCY',
+          'indice': 'EQUITY', 'fonds': 'MUTUALFUND', 'etc': 'ETF', 'etn': 'ETF',
+          // Anciens types Yahoo (rétrocompatibilité positions existantes)
+          'equity': 'EQUITY', 'future': 'FUTURE', 'futures': 'FUTURE',
+          'mutual fund': 'MUTUALFUND', 'mutualfund': 'MUTUALFUND', 'bond': 'BOND',
         }
         if (filterTypes !== undefined) {
           if (filterTypes.length === 0) {
@@ -422,16 +443,16 @@ function TickerAutocomplete({
           (categorySuggestions ?? []).every(s => s.type === 'bond')
 
         const localTickers = new Set(filteredLocal.map(r => r.ticker))
-        let yahooExtra = raw.filter(r => !localTickers.has(r.ticker))
+        let apiResults = raw.filter(r => !localTickers.has(r.ticker))
         if (isBondCategory) {
           // Restreindre aux tickers obligataires connus + forcer le type 'bond'
-          yahooExtra = yahooExtra
+          apiResults = apiResults
             .filter(r => knownBondTickers.has(r.ticker))
             .map(r => ({ ...r, type: 'bond' }))
         }
         const merged = [
           ...filteredLocal,
-          ...yahooExtra,
+          ...apiResults,
         ]
         setResults(merged)
         setOpen(true)
