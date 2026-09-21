@@ -1,50 +1,64 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-// ─── Devises supportées ───────────────────────────────────────────────────────
-const DEVISE_MAP: Record<string, string> = {
-  CHF: 'CHF', USD: 'USD', EUR: 'EUR', GBP: 'GBP', JPY: 'JPY',
-  AUD: 'AUD', CAD: 'CAD', CNY: 'CNY', HKD: 'HKD', SGD: 'SGD',
-  NZD: 'NZD', NOK: 'NOK', SEK: 'SEK', DKK: 'DKK', PLN: 'PLN',
-  CZK: 'CZK', KRW: 'KRW', INR: 'INR', MXN: 'MXN', BRL: 'BRL',
-  ZAR: 'ZAR', TRY: 'TRY',
+// ─── Configuration Twelve Data ────────────────────────────────────────────────
+// Variable d'environnement : TWELVE_DATA_KEY=votre_clé
+//
+// Plan gratuit : 800 crédits/jour, 8 req/min
+// Instruments disponibles sur le plan gratuit :
+//   ✅ Actions US (NYSE, NASDAQ, NYSE American)
+//   ✅ ETF US
+//   ✅ Forex (toutes les paires majeures)
+//   ✅ Crypto (toutes les paires majeures)
+//   ✅ Indices US
+//
+// Plan payant (à activer dans TWELVE_DATA_ENABLED_EXCHANGES ci-dessous) :
+//   → Actions internationales : SIX, XETRA, LSE, EPA, TSX, ASX…
+//   → Matières premières / futures : COMEX, CME, CBOT…
+//   → ETF internationaux
+
+// ─── Exchanges activés selon votre plan ──────────────────────────────────────
+// Pour activer un exchange lors d'une montée en plan, ajoutez-le à ce tableau.
+// null = pas de filtre (laisse Twelve Data renvoyer tous les exchanges disponibles)
+const ENABLED_EXCHANGES: string[] | null = null  // null = tout ce que le plan permet
+
+// ─── Types d'instruments à afficher dans la recherche ────────────────────────
+// Ajouter ici les types au fur et à mesure que le plan les couvre.
+const ENABLED_INSTRUMENT_TYPES = new Set([
+  'Common Stock',
+  'ETF',
+  'Cryptocurrency',
+  'Forex',
+  'Index',
+  'Mutual Fund',
+  'ETC',
+  'ETN',
+])
+
+// ─── Mapping : types Twelve Data → libellés Finveria ─────────────────────────
+const TYPE_LABELS: Record<string, string> = {
+  'Common Stock': 'Action',
+  'ETF':          'ETF',
+  'Cryptocurrency': 'Crypto',
+  'Forex':        'Forex',
+  'Index':        'Indice',
+  'Mutual Fund':  'Fonds',
+  'ETC':          'ETC',
+  'ETN':          'ETN',
 }
 
+// ─── Noms des devises ─────────────────────────────────────────────────────────
 const CURRENCY_NAMES: Record<string, string> = {
-  USD: 'Dollar américain', EUR: 'Euro', GBP: 'Livre sterling', JPY: 'Yen japonais',
-  CHF: 'Franc suisse', AUD: 'Dollar australien', CAD: 'Dollar canadien',
-  CNY: 'Yuan chinois', HKD: 'Dollar de Hong Kong', SGD: 'Dollar de Singapour',
-  NZD: 'Dollar néo-zélandais', NOK: 'Couronne norvégienne', SEK: 'Couronne suédoise',
-  DKK: 'Couronne danoise', PLN: 'Złoty polonais', CZK: 'Couronne tchèque',
-  KRW: 'Won coréen', INR: 'Roupie indienne', MXN: 'Peso mexicain',
-  BRL: 'Real brésilien', ZAR: 'Rand sud-africain', TRY: 'Livre turque',
+  USD: 'Dollar américain', EUR: 'Euro', GBP: 'Livre sterling',
+  JPY: 'Yen japonais', CHF: 'Franc suisse', AUD: 'Dollar australien',
+  CAD: 'Dollar canadien', CNY: 'Yuan chinois', HKD: 'Dollar de Hong Kong',
+  SGD: 'Dollar de Singapour', NZD: 'Dollar néo-zélandais',
+  NOK: 'Couronne norvégienne', SEK: 'Couronne suédoise', DKK: 'Couronne danoise',
+  PLN: 'Złoty polonais', CZK: 'Couronne tchèque', KRW: 'Won coréen',
+  INR: 'Roupie indienne', MXN: 'Peso mexicain', BRL: 'Real brésilien',
+  ZAR: 'Rand sud-africain', TRY: 'Livre turque',
 }
 
-const COMMODITY_NAMES: Record<string, string> = {
-  XAU: 'Or', XAG: 'Argent', XPT: 'Platine', XPD: 'Palladium',
-  XCU: 'Cuivre', XBR: 'Pétrole Brent', XTI: 'Pétrole WTI',
-}
-
-const FUTURES_NAMES: Record<string, string> = {
-  'GC=F': 'Or — Futures (COMEX)',
-  'SI=F': 'Argent — Futures (COMEX)',
-  'PL=F': 'Platine — Futures',
-  'PA=F': 'Palladium — Futures',
-  'CL=F': 'Pétrole brut WTI — Futures',
-  'BZ=F': 'Pétrole brut Brent — Futures',
-  'NG=F': 'Gaz naturel — Futures',
-  'ZC=F': 'Maïs — Futures',
-  'ZW=F': 'Blé — Futures',
-  'ZS=F': 'Soja — Futures',
-  'HG=F': 'Cuivre — Futures',
-  'ES=F': 'S&P 500 — Futures (E-mini)',
-  'NQ=F': 'Nasdaq 100 — Futures (E-mini)',
-  'YM=F': 'Dow Jones — Futures (E-mini)',
-  'RTY=F': 'Russell 2000 — Futures',
-  'VX=F': 'VIX — Futures',
-  'BTC=F': 'Bitcoin — Futures (CME)',
-  'ETH=F': 'Ethereum — Futures (CME)',
-}
-
+// ─── Noms des cryptos connus ──────────────────────────────────────────────────
 const CRYPTO_NAMES: Record<string, string> = {
   BTC: 'Bitcoin', ETH: 'Ethereum', BNB: 'BNB', SOL: 'Solana',
   XRP: 'XRP (Ripple)', ADA: 'Cardano', AVAX: 'Avalanche', DOT: 'Polkadot',
@@ -55,144 +69,146 @@ const CRYPTO_NAMES: Record<string, string> = {
   SUI: 'Sui', TON: 'Toncoin', PEPE: 'Pepe', WLD: 'Worldcoin',
 }
 
-// ─── Détection métaux précieux spot (XAUUSD=X, XAGUSD=X, XPTUSD=X, XPDUSD=X) ─
-const PRECIOUS_METALS = new Set(['XAU', 'XAG', 'XPT', 'XPD'])
-function isPreciousMetal(ticker: string): boolean {
-  const m = ticker.match(/^([A-Z]{3})([A-Z]{3})=X$/)
-  return !!m && PRECIOUS_METALS.has(m[1])
+// ─── Actifs statiques (toujours disponibles, peu importe le plan) ─────────────
+// Ces actifs sont définis localement car soit Twelve Data ne les couvre pas sur
+// le plan gratuit, soit ce sont des raccourcis pratiques pour l'utilisateur.
+// Pour chaque actif, le ticker est celui utilisé dans /api/prices.
+interface StaticAsset {
+  ticker: string
+  nom: string
+  type: string
+  devise: string
+  bourse: string
 }
 
-// ─── Raccourcis français/anglais pour les matières premières ──────────────────
-// Apparaissent en tête quand la requête commence par un de ces mots-clés
-interface ShortcutEntry {
-  ticker: string; nom: string; type: string; devise: string; bourse: string
-}
-const SHORTCUTS: { keys: string[]; result: ShortcutEntry }[] = [
-  {
-    keys: ['or', 'gold', 'xau', 'xauusd'],
-    result: { ticker: 'XAUUSD=X', nom: 'Or Spot / Dollar américain (XAU/USD)', type: 'Futures', devise: 'USD', bourse: 'Forex' },
-  },
-  {
-    keys: ['argent', 'silver', 'xag', 'xagusd'],
-    result: { ticker: 'XAGUSD=X', nom: 'Argent Spot / Dollar américain (XAG/USD)', type: 'Futures', devise: 'USD', bourse: 'Forex' },
-  },
-  {
-    keys: ['platine', 'platinum', 'xpt', 'xptusd'],
-    result: { ticker: 'XPTUSD=X', nom: 'Platine Spot / Dollar américain (XPT/USD)', type: 'Futures', devise: 'USD', bourse: 'Forex' },
-  },
-  {
-    keys: ['palladium', 'xpd', 'xpdusd'],
-    result: { ticker: 'XPDUSD=X', nom: 'Palladium Spot / Dollar américain (XPD/USD)', type: 'Futures', devise: 'USD', bourse: 'Forex' },
-  },
-  {
-    keys: ['petrole', 'petrol', 'wti', 'crude', 'cl=f'],
-    result: { ticker: 'CL=F', nom: 'Pétrole brut WTI — Futures', type: 'Futures', devise: 'USD', bourse: 'CME' },
-  },
-  {
-    keys: ['brent', 'bz=f'],
-    result: { ticker: 'BZ=F', nom: 'Pétrole brut Brent — Futures', type: 'Futures', devise: 'USD', bourse: 'ICE' },
-  },
-  {
-    keys: ['gaz', 'gas', 'natural gas', 'ng=f'],
-    result: { ticker: 'NG=F', nom: 'Gaz naturel — Futures', type: 'Futures', devise: 'USD', bourse: 'CME' },
-  },
-  {
-    keys: ['cuivre', 'copper', 'hg=f'],
-    result: { ticker: 'HG=F', nom: 'Cuivre — Futures', type: 'Futures', devise: 'USD', bourse: 'COMEX' },
-  },
-  {
-    keys: ['ble', 'wheat', 'zw=f'],
-    result: { ticker: 'ZW=F', nom: 'Blé — Futures', type: 'Futures', devise: 'USD', bourse: 'CBOT' },
-  },
-  {
-    keys: ['mais', 'corn', 'zc=f'],
-    result: { ticker: 'ZC=F', nom: 'Maïs — Futures', type: 'Futures', devise: 'USD', bourse: 'CBOT' },
-  },
+const STATIC_ASSETS: StaticAsset[] = [
+  // ── Métaux précieux (spot via GoldAPI, fallback Twelve Data) ──────────────
+  { ticker: 'XAU/USD', nom: 'Or Spot (XAU/USD)',      type: 'Futures', devise: 'USD', bourse: 'Spot' },
+  { ticker: 'XAG/USD', nom: 'Argent Spot (XAG/USD)',  type: 'Futures', devise: 'USD', bourse: 'Spot' },
+  { ticker: 'XPT/USD', nom: 'Platine Spot (XPT/USD)', type: 'Futures', devise: 'USD', bourse: 'Spot' },
+  { ticker: 'XPD/USD', nom: 'Palladium Spot (XPD/USD)', type: 'Futures', devise: 'USD', bourse: 'Spot' },
+
+  // ── Énergie (Futures) — à activer si plan couvre les futures ──────────────
+  // { ticker: 'CL1!',  nom: 'Pétrole brut WTI — Futures', type: 'Futures', devise: 'USD', bourse: 'CME' },
+  // { ticker: 'BZ1!',  nom: 'Pétrole brut Brent — Futures', type: 'Futures', devise: 'USD', bourse: 'ICE' },
+  // { ticker: 'NG1!',  nom: 'Gaz naturel — Futures', type: 'Futures', devise: 'USD', bourse: 'CME' },
+
+  // ── Agricoles (Futures) — à activer si plan couvre les futures ────────────
+  // { ticker: 'ZC1!', nom: 'Maïs — Futures', type: 'Futures', devise: 'USD', bourse: 'CBOT' },
+  // { ticker: 'ZW1!', nom: 'Blé — Futures', type: 'Futures', devise: 'USD', bourse: 'CBOT' },
+  // { ticker: 'ZS1!', nom: 'Soja — Futures', type: 'Futures', devise: 'USD', bourse: 'CBOT' },
+]
+
+// ─── Raccourcis clavier en français ──────────────────────────────────────────
+const SHORTCUTS: { keys: string[]; result: StaticAsset }[] = [
+  { keys: ['or', 'gold', 'xau'],       result: STATIC_ASSETS[0] },
+  { keys: ['argent', 'silver', 'xag'], result: STATIC_ASSETS[1] },
+  { keys: ['platine', 'platinum', 'xpt'], result: STATIC_ASSETS[2] },
+  { keys: ['palladium', 'xpd'],        result: STATIC_ASSETS[3] },
+  // Décommenter quand les futures sont activés :
+  // { keys: ['petrole', 'wti', 'crude'],  result: STATIC_ASSETS[4] },
+  // { keys: ['brent'],                    result: STATIC_ASSETS[5] },
+  // { keys: ['gaz', 'gas'],               result: STATIC_ASSETS[6] },
 ]
 
 function normalize(s: string): string {
   return s.toLowerCase()
-    .replace(/[éèêë]/g, 'e').replace(/[àâä]/g, 'a').replace(/[îï]/g, 'i')
-    .replace(/[ôö]/g, 'o').replace(/[ùûü]/g, 'u').replace(/ç/g, 'c')
+    .replace(/[éèêë]/g, 'e').replace(/[àâä]/g, 'a')
+    .replace(/[îï]/g, 'i').replace(/[ôö]/g, 'o')
+    .replace(/[ùûü]/g, 'u').replace(/ç/g, 'c')
 }
 
-// ─── Nom enrichi ──────────────────────────────────────────────────────────────
-function enrichName(ticker: string, rawName: string, quoteType: string): string {
-  if (quoteType === 'FUTURE' && FUTURES_NAMES[ticker]) return FUTURES_NAMES[ticker]
-
-  const fxMatch = ticker.match(/^([A-Z]{3,4})([A-Z]{3})=X$/)
-  if (fxMatch) {
-    const [, base, quote] = fxMatch
-    const baseName  = COMMODITY_NAMES[base]  ?? CURRENCY_NAMES[base]  ?? base
-    const quoteName = COMMODITY_NAMES[quote] ?? CURRENCY_NAMES[quote] ?? quote
-    // Métal précieux spot : nommer clairement
-    if (PRECIOUS_METALS.has(base)) {
-      return `${baseName} Spot / ${quoteName} (${base}/${quote})`
-    }
-    return `${baseName} / ${quoteName} (${base}/${quote})`
+// ─── Enrichissement des noms ──────────────────────────────────────────────────
+function enrichCryptoName(symbol: string, rawName: string): string {
+  // symbol Twelve Data pour crypto : "BTC/USD"
+  const m = symbol.match(/^([A-Z]{2,10})\/([A-Z]{3,4})$/)
+  if (m) {
+    const coinName = CRYPTO_NAMES[m[1]] ?? m[1]
+    return `${coinName} (${m[1]}/${m[2]})`
   }
-
-  const cryptoMatch = ticker.match(/^([A-Z]{2,10})-([A-Z]{3,4})$/)
-  if (cryptoMatch) {
-    const [, coin, currency] = cryptoMatch
-    const coinName = CRYPTO_NAMES[coin] ?? coin
-    return `${coinName} (${coin}/${currency})`
-  }
-
   return rawName
 }
 
-function inferDevise(ticker: string, currency: string): string {
-  const cryptoMatch = ticker.match(/-([A-Z]{3,4})$/)
-  if (cryptoMatch && DEVISE_MAP[cryptoMatch[1]]) return cryptoMatch[1]
-  const fxMatch = ticker.match(/([A-Z]{3})=X$/)
-  if (fxMatch && DEVISE_MAP[fxMatch[1]]) return fxMatch[1]
-  return DEVISE_MAP[currency] ?? 'USD'
+function enrichForexName(symbol: string, rawName: string): string {
+  const m = symbol.match(/^([A-Z]{3})\/([A-Z]{3})$/)
+  if (!m) return rawName
+  const baseName  = CURRENCY_NAMES[m[1]] ?? m[1]
+  const quoteName = CURRENCY_NAMES[m[2]] ?? m[2]
+  return `${baseName} / ${quoteName} (${m[1]}/${m[2]})`
 }
 
+// ─── Extraction de la devise depuis un résultat Twelve Data ──────────────────
+function extractDevise(symbol: string, currency: string): string {
+  // Forex : "EUR/CHF" → devise = CHF
+  const fxM = symbol.match(/\/([A-Z]{3,4})$/)
+  if (fxM && CURRENCY_NAMES[fxM[1]]) return fxM[1]
+  if (CURRENCY_NAMES[currency]) return currency
+  return currency || 'USD'
+}
+
+// ─── Recherche Twelve Data ────────────────────────────────────────────────────
+async function searchTwelveData(query: string): Promise<StaticAsset[]> {
+  const key = process.env.TWELVE_DATA_KEY
+  if (!key) return []
+
+  try {
+    const url = new URL('https://api.twelvedata.com/symbol_search')
+    url.searchParams.set('symbol', query)
+    url.searchParams.set('outputsize', '10')
+    url.searchParams.set('apikey', key)
+    if (ENABLED_EXCHANGES) {
+      url.searchParams.set('exchange', ENABLED_EXCHANGES.join(','))
+    }
+
+    const res = await fetch(url.toString(), {
+      headers: { Accept: 'application/json' },
+      next: { revalidate: 0 },
+    })
+    if (!res.ok) return []
+
+    const json = await res.json()
+    if (json.status === 'error' || !Array.isArray(json.data)) return []
+
+    return json.data
+      .filter((r: Record<string, string>) => ENABLED_INSTRUMENT_TYPES.has(r.instrument_type))
+      .map((r: Record<string, string>) => {
+        const type   = TYPE_LABELS[r.instrument_type] ?? r.instrument_type
+        const devise = extractDevise(r.symbol, r.currency)
+
+        let nom = r.instrument_name || r.symbol
+        if (r.instrument_type === 'Cryptocurrency') nom = enrichCryptoName(r.symbol, nom)
+        if (r.instrument_type === 'Forex')          nom = enrichForexName(r.symbol, nom)
+
+        return {
+          ticker: r.symbol,
+          nom,
+          type,
+          devise,
+          bourse: r.exchange || r.mic_code || '',
+        }
+      })
+  } catch {
+    return []
+  }
+}
+
+// ─── Handler ──────────────────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const q = new URL(req.url).searchParams.get('q')?.trim()
   if (!q || q.length < 2) return NextResponse.json({ results: [] })
 
   const qNorm = normalize(q)
 
-  // ── 1. Raccourcis matières premières ────────────────────────────────────────
+  // 1. Raccourcis locaux (français / matières premières)
   const shortcuts = SHORTCUTS
     .filter(s => s.keys.some(k => k.startsWith(qNorm) || qNorm.startsWith(k)))
     .map(s => s.result)
   const shortcutTickers = new Set(shortcuts.map(s => s.ticker))
 
-  // ── 2. Yahoo Finance search ─────────────────────────────────────────────────
-  let yahooResults: ShortcutEntry[] = []
-  try {
-    const res = await fetch(
-      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=8&newsCount=0&enableFuzzyQuery=true&enableCb=false`,
-      { headers: { 'User-Agent': 'Mozilla/5.0' } }
-    )
-    if (res.ok) {
-      const json = await res.json()
-      const quotes = json?.quotes ?? []
-      yahooResults = quotes
-        .filter((r: Record<string, string>) =>
-          ['EQUITY', 'ETF', 'CRYPTOCURRENCY', 'FUTURE', 'MUTUALFUND', 'CURRENCY'].includes(r.quoteType)
-        )
-        .filter((r: Record<string, string>) => !shortcutTickers.has(r.symbol))
-        .map((r: Record<string, string>) => {
-          const metal = isPreciousMetal(r.symbol)
-          return {
-            ticker: r.symbol,
-            nom: enrichName(r.symbol, r.longname || r.shortname || r.symbol, r.quoteType),
-            bourse: r.exchDisp || '',
-            // Les métaux précieux spot sont reclassés en Futures pour correspondre
-            // à la catégorie "Matières premières" du filtre portfolio
-            type: metal ? 'Futures' : (r.typeDisp || ''),
-            devise: inferDevise(r.symbol, r.currency),
-            pays: r.exchDisp || '',
-          }
-        })
-    }
-  } catch { /* silencieux */ }
+  // 2. Recherche Twelve Data
+  const tdResults = (await searchTwelveData(q))
+    .filter(r => !shortcutTickers.has(r.ticker))
 
-  const results = [...shortcuts, ...yahooResults]
+  const results = [...shortcuts, ...tdResults]
   return NextResponse.json({ results })
 }
