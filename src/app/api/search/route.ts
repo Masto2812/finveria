@@ -17,9 +17,21 @@ import { NextRequest, NextResponse } from 'next/server'
 //   → ETF internationaux
 
 // ─── Exchanges activés selon votre plan ──────────────────────────────────────
-// Pour activer un exchange lors d'une montée en plan, ajoutez-le à ce tableau.
-// null = pas de filtre (laisse Twelve Data renvoyer tous les exchanges disponibles)
-const ENABLED_EXCHANGES: string[] | null = null  // null = tout ce que le plan permet
+// Plan gratuit : uniquement les exchanges US couverts
+// Plan payant : décommenter les lignes supplémentaires (ou remettre null pour tout accepter)
+const ENABLED_EXCHANGES: string[] | null = [
+  'NYSE',          // New York Stock Exchange
+  'NASDAQ',        // Nasdaq
+  'NYSE American', // AMEX (petites caps US)
+  'OTC',           // OTC Markets US
+  // ── Activer lors du passage au plan payant ────────────────────────────────
+  // 'SIX',        // Bourse suisse (NESN.SW, ROG.SW, NOVN.SW...)
+  // 'XETRA',      // Deutsche Boerse (SAP.DE, SIE.DE, BAS.DE...)
+  // 'LSE',        // London Stock Exchange (SHEL.L, AZN.L...)
+  // 'EURONEXT',   // Euronext Paris/Amsterdam/Bruxelles (MC.PA, ASML.AS...)
+  // 'TSX',        // Toronto (SHOP.TO, RY.TO...)
+  // 'ASX',        // Sydney (CBA.AX, BHP.AX...)
+]
 
 // ─── Types d'instruments à afficher dans la recherche ────────────────────────
 // Ajouter ici les types au fur et à mesure que le plan les couvre.
