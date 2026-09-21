@@ -16,22 +16,32 @@ import { NextRequest, NextResponse } from 'next/server'
 //   → Matières premières / futures : COMEX, CME, CBOT…
 //   → ETF internationaux
 
-// ─── Exchanges activés selon votre plan ──────────────────────────────────────
-// Plan gratuit : uniquement les exchanges US couverts
-// Plan payant : décommenter les lignes supplémentaires (ou remettre null pour tout accepter)
-const ENABLED_EXCHANGES: string[] | null = [
-  'NYSE',          // New York Stock Exchange
-  'NASDAQ',        // Nasdaq
-  'NYSE American', // AMEX (petites caps US)
-  'OTC',           // OTC Markets US
+// ─── Exchanges autorisés selon votre plan ────────────────────────────────────
+// IMPORTANT : symbol_search ne supporte pas le filtre exchange en paramètre URL.
+// Le filtre est appliqué côté serveur sur les résultats retournés par Twelve Data.
+// null = aucun filtre (tout accepter — utile une fois sur plan payant)
+//
+// Plan gratuit : exchanges US uniquement
+const ENABLED_EXCHANGES: Set<string> | null = new Set([
+  'NYSE',           // New York Stock Exchange
+  'NASDAQ',         // Nasdaq
+  'NYSE American',  // AMEX (petites caps US)
+  'NYSE Arca',      // NYSE Arca (SPY, QQQ, EFA, VWO…)
+  'OTC',            // OTC Markets US
+  'OTC Bulletin Board', // OTC BB
   // ── Activer lors du passage au plan payant ────────────────────────────────
-  // 'SIX',        // Bourse suisse (NESN.SW, ROG.SW, NOVN.SW...)
-  // 'XETRA',      // Deutsche Boerse (SAP.DE, SIE.DE, BAS.DE...)
-  // 'LSE',        // London Stock Exchange (SHEL.L, AZN.L...)
-  // 'EURONEXT',   // Euronext Paris/Amsterdam/Bruxelles (MC.PA, ASML.AS...)
-  // 'TSX',        // Toronto (SHOP.TO, RY.TO...)
-  // 'ASX',        // Sydney (CBA.AX, BHP.AX...)
-]
+  // 'SIX',         // Bourse suisse (NESN.SW, ROG.SW, NOVN.SW...)
+  // 'XETRA',       // Deutsche Boerse (SAP.DE, SIE.DE, BAS.DE...)
+  // 'LSE',         // London Stock Exchange (SHEL.L, AZN.L...)
+  // 'EURONEXT',    // Euronext Paris/Amsterdam/Bruxelles (MC.PA, ASML.AS...)
+  // 'TSX',         // Toronto (SHOP.TO, RY.TO...)
+  // 'ASX',         // Sydney (CBA.AX, BHP.AX...)
+])
+
+// Types pour lesquels on applique le filtre exchange (pas pour crypto/forex/indices)
+const EXCHANGE_FILTERED_TYPES = new Set([
+  'Common Stock', 'ETF', 'ETC', 'ETN', 'Mutual Fund',
+])
 
 // ─── Types d'instruments à afficher dans la recherche ────────────────────────
 // Ajouter ici les types au fur et à mesure que le plan les couvre.
@@ -168,9 +178,8 @@ async function searchTwelveData(query: string): Promise<StaticAsset[]> {
     url.searchParams.set('symbol', query)
     url.searchParams.set('outputsize', '10')
     url.searchParams.set('apikey', key)
-    if (ENABLED_EXCHANGES) {
-      url.searchParams.set('exchange', ENABLED_EXCHANGES.join(','))
-    }
+    // Note : symbol_search n'accepte pas de filtre exchange en paramètre URL.
+    // Le filtre est appliqué sur les résultats (voir EXCHANGE_FILTERED_TYPES ci-dessus).
 
     const res = await fetch(url.toString(), {
       headers: { Accept: 'application/json' },
@@ -182,7 +191,14 @@ async function searchTwelveData(query: string): Promise<StaticAsset[]> {
     if (json.status === 'error' || !Array.isArray(json.data)) return []
 
     return json.data
-      .filter((r: Record<string, string>) => ENABLED_INSTRUMENT_TYPES.has(r.instrument_type))
+      .filter((r: Record<string, string>) => {
+        if (!ENABLED_INSTRUMENT_TYPES.has(r.instrument_type)) return false
+        // Filtrer par exchange uniquement pour les types exchange-dépendants
+        if (ENABLED_EXCHANGES && EXCHANGE_FILTERED_TYPES.has(r.instrument_type)) {
+          return ENABLED_EXCHANGES.has(r.exchange)
+        }
+        return true
+      })
       .map((r: Record<string, string>) => {
         const type   = TYPE_LABELS[r.instrument_type] ?? r.instrument_type
         const devise = extractDevise(r.symbol, r.currency)
