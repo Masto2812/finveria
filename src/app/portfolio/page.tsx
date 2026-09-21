@@ -121,7 +121,7 @@ const CATEGORY_PLACEHOLDER: Record<string, string> = {
   'Matières premières':'Rechercher une matière première… (ex: Or, XAU, GC=F)',
   'Crypto':            'Rechercher une crypto… (ex: Bitcoin, BTC-EUR, ETH)',
   'Monnaies':          'Rechercher une devise… (ex: EUR/USD, GBPCHF=X)',
-  'Tout':              'Rechercher un actif… (ex: ticker Yahoo Finance)',
+  'Tout':              'Rechercher un actif… (ex: AAPL, BTC/USD, EUR/CHF)',
 }
 
 const DEVISES = [
@@ -3339,7 +3339,7 @@ function InvestorProfileSection({
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
                     </svg>
-                    Récupération des données historiques Yahoo Finance…
+                    Récupération des données historiques Twelve Data…
                   </div>
                 )}
 
@@ -3382,7 +3382,7 @@ function InvestorProfileSection({
                         <strong className="text-[#1B3050] dark:text-white">
                           {new Date(histStats.periodEnd).toLocaleDateString('fr-CH', { month: 'long', year: 'numeric' })}
                         </strong>
-                        {' '}({histStats.yearsCount.toFixed(1)} ans), fournis par Yahoo Finance et ajustés pour les dividendes et les divisions d&apos;actions. {histStats.isMonthly ? 'On mesure chaque mois la variation de valeur du portefeuille en appliquant vos proportions actuelles sur toute cette période — comme si vous aviez toujours détenu ces actifs dans ces mêmes proportions. Le rendement annuel et le risque sont ensuite calculés à partir de ces variations mensuelles.' : 'On mesure chaque jour la variation de valeur du portefeuille en appliquant vos proportions actuelles sur toute cette période — comme si vous aviez toujours détenu ces actifs dans ces mêmes proportions. Le rendement annuel et le risque sont ensuite calculés à partir de ces variations journalières.'}
+                        {' '}({histStats.yearsCount.toFixed(1)} ans), fournis par Twelve Data et ajustés pour les divisions d&apos;actions. {histStats.isMonthly ? 'On mesure chaque mois la variation de valeur du portefeuille en appliquant vos proportions actuelles sur toute cette période — comme si vous aviez toujours détenu ces actifs dans ces mêmes proportions. Le rendement annuel et le risque sont ensuite calculés à partir de ces variations mensuelles.' : 'On mesure chaque jour la variation de valeur du portefeuille en appliquant vos proportions actuelles sur toute cette période — comme si vous aviez toujours détenu ces actifs dans ces mêmes proportions. Le rendement annuel et le risque sont ensuite calculés à partir de ces variations journalières.'}
                       </p>
                       <div className="space-y-1 text-xs text-[#8899AA] pt-1 border-t border-[#F5F3EF] dark:border-[#1e3347]">
                         <p>· E(Rp) = moyenne des rendements {histStats?.isMonthly ? 'mensuels × 12 (mois par an)' : 'journaliers × 252 (jours de bourse par an)'}</p>
@@ -4553,7 +4553,7 @@ export default function PortfolioPage() {
           {lastMaj && (
             <p className="text-xs text-[#9E9A93] mt-1">
               Dernière mise à jour : {new Date(lastMaj).toLocaleString('fr-CH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-              {' '}· Données Yahoo Finance (délai ~15 min)
+              {' '}· Données Twelve Data (délai ~15 min)
             </p>
           )}
           <div className="flex flex-wrap gap-2 mt-4">
@@ -5452,7 +5452,7 @@ export default function PortfolioPage() {
                   <button type="button" className="w-5 h-5 rounded-full border border-[#9E9A93] text-[#9E9A93] hover:border-[#1B3050] hover:text-[#1B3050] dark:hover:border-[#A8D8C8] dark:hover:text-[#A8D8C8] text-xs flex items-center justify-center transition-colors leading-none">?</button>
                   <div className="absolute right-0 top-7 w-72 bg-white dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-lg shadow-lg p-3 text-xs text-[#5C6880] dark:text-[#A8B8C8] hidden group-hover:block z-10">
                     <p className="font-medium text-[#1B3050] dark:text-[#E8E4DC] mb-1">Catégorisation automatique</p>
-                    <p>La catégorie est attribuée automatiquement selon le type retourné par Yahoo Finance, mais des erreurs peuvent survenir — notamment pour les ETF obligataires ou certains fonds.</p>
+                    <p>La catégorie est attribuée automatiquement selon le type retourné par Twelve Data, mais des erreurs peuvent survenir — notamment pour les ETF obligataires ou certains fonds.</p>
                     <p className="mt-1.5">Vous pouvez toujours <span className="font-medium text-[#1B3050] dark:text-[#E8E4DC]">modifier la catégorie manuellement</span> en cliquant sur les boutons ci-dessus.</p>
                   </div>
                 </div>
