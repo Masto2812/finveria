@@ -2783,10 +2783,10 @@ function PnLBarChart({ positions }: { positions: PositionCalc[] }) {
           const CHART_H = 80
           const HALF    = CHART_H / 2
           const n       = data.entries.length
+          const GAP_MIN = 3
           const MAX_BAR = tab === 'annuel'
             ? (n <= 12 ? 20 : Math.max(6, Math.floor((480 - GAP_MIN * (n - 1)) / n)))
             : n <= 12 ? 20 : n <= 20 ? 8 : 9
-          const GAP_MIN = 3
           const svgW    = 480
           const barW    = Math.min(MAX_BAR, Math.max(2, Math.floor((svgW - GAP_MIN * (n - 1)) / n)))
           const GAP     = n > 1 ? Math.max(GAP_MIN, Math.floor((svgW - barW * n) / (n - 1))) : 0
