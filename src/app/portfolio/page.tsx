@@ -41,6 +41,16 @@ function fmtDay(iso: string): string {
   return iso.slice(8, 10) + '/' + iso.slice(5, 7)
 }
 
+function fmtTime(iso: string): string {
+  // "YYYY-MM-DD HH:mm:ss" → "HH:MM"
+  return iso.slice(11, 16)
+}
+
+function fmtHourDay(iso: string): string {
+  // "YYYY-MM-DD HH:mm:ss" → "DD/MM HHh"
+  return iso.slice(8, 10) + '/' + iso.slice(5, 7) + ' ' + iso.slice(11, 13) + 'h'
+}
+
 function cpiAt(dateStr: string): number {
   const d = new Date(dateStr)
   const y = d.getFullYear()
@@ -58,31 +68,54 @@ function inflationCumulee(dateAchat: string): number {
 // ─── Shared price cache ──────────────────────────────────────────────────────
 const priceCache = new Map<string, { price: number; fxRate: number }>()
 const historyCache = new Map<string, Record<string, { dates: string[]; closes: number[] }>>()
-async function fetchHistory(tickers: string, bust = false): Promise<Record<string, { dates: string[]; closes: number[] }>> {
-  const cacheKey = tickers + (bust ? ':bust' : '')
-  if (!bust && historyCache.has(tickers)) return historyCache.get(tickers)!
-  const url = `/api/history?tickers=${encodeURIComponent(tickers)}${bust ? '&bust=1' : ''}`
-  const res = await fetch(url)
-  const data = await res.json()
-  historyCache.set(cacheKey, data)
-  return data
+// Déduplique les requêtes en vol (évite 3 appels identiques si 3 charts s'initialisent en même temps)
+const historyInProgress = new Map<string, Promise<Record<string, { dates: string[]; closes: number[] }>>>()
+// Cherche la première date connue d'un ticker dans le cache existant (évite un fetch supplémentaire)
+function getMinDateFromCache(ticker: string): string | undefined {
+  const key = ticker.toUpperCase()
+  for (const [, data] of historyCache.entries()) {
+    const entry = data[key]
+    if (entry?.dates && entry.dates.length > 0) return entry.dates[0]
+  }
+  return undefined
+}
+async function fetchHistory(tickers: string, bust = false, interval: '1day' | '1h' | '4h' | '5min' = '1day'): Promise<Record<string, { dates: string[]; closes: number[] }>> {
+  const cacheKey = tickers + ':' + interval + (bust ? ':bust' : '')
+  if (!bust && historyCache.has(cacheKey)) return historyCache.get(cacheKey)!
+  if (!bust && historyInProgress.has(cacheKey)) return historyInProgress.get(cacheKey)!
+  const promise = (async () => {
+    const url = `/api/history?tickers=${encodeURIComponent(tickers)}&interval=${interval}${bust ? '&bust=1' : ''}`
+    const res = await fetch(url)
+    const data = await res.json()
+    historyCache.set(cacheKey, data)
+    historyInProgress.delete(cacheKey)
+    return data
+  })()
+  if (!bust) historyInProgress.set(cacheKey, promise)
+  return promise
 }
 
+const priceFetchInProgress = new Map<string, Promise<{ price: number; fxRate: number } | null>>()
 async function fetchPriceCached(ticker: string, devise: string, date?: string): Promise<{ price: number; fxRate: number } | null> {
   const key = `${ticker}|${devise}|${date ?? 'now'}`
   if (priceCache.has(key)) return priceCache.get(key)!
-  try {
-    const url = date
-      ? `/api/prices?ticker=${encodeURIComponent(ticker)}&devise=${devise}&date=${date}`
-      : `/api/prices?ticker=${encodeURIComponent(ticker)}&devise=${devise}`
-    const res = await fetch(url)
-    if (!res.ok) return null
-    const d = await res.json()
-    if (d.price == null) return null
-    const entry = { price: d.price, fxRate: d.fxRate ?? 1 }
-    priceCache.set(key, entry)
-    return entry
-  } catch { return null }
+  if (priceFetchInProgress.has(key)) return priceFetchInProgress.get(key)!
+  const promise = (async () => {
+    try {
+      const url = date
+        ? `/api/prices?ticker=${encodeURIComponent(ticker)}&devise=${devise}&date=${date}`
+        : `/api/prices?ticker=${encodeURIComponent(ticker)}&devise=${devise}`
+      const res = await fetch(url)
+      if (!res.ok) return null
+      const d = await res.json()
+      if (d.price == null) return null
+      const entry = { price: d.price, fxRate: d.fxRate ?? 1 }
+      priceCache.set(key, entry)
+      return entry
+    } catch { return null } finally { priceFetchInProgress.delete(key) }
+  })()
+  priceFetchInProgress.set(key, promise)
+  return promise
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -102,25 +135,24 @@ interface SearchResult { ticker: string; nom: string; bourse: string; type: stri
 
 function typeIcon(t: string): string {
   switch (t.toLowerCase()) {
-    case 'equity': case 'equities': return '📈'
-    case 'etf':                     return '🗂️'
-    case 'cryptocurrency':          return '₿'
-    case 'future': case 'futures':  return '⛏️'
-    case 'mutualfund': case 'mutual fund': return '🏛️'
-    case 'bond':                    return '🏛️'
-    case 'currency':                return '💱'
-    case 'index':                   return '📊'
-    default:                        return '📊'
+    case 'equity': case 'equities': case 'action': return '📈'
+    case 'etf': case 'etc': case 'etn':            return '🗂️'
+    case 'cryptocurrency': case 'crypto':           return '₿'
+    case 'future': case 'futures': case 'commodity': return '⛏️'
+    case 'mutualfund': case 'mutual fund': case 'bond': case 'fonds': return '🏛️'
+    case 'currency': case 'forex':                  return '💱'
+    case 'index': case 'indice':                    return '📊'
+    default:                                        return '📊'
   }
 }
 
 const CATEGORY_PLACEHOLDER: Record<string, string> = {
-  'Actions':           'Rechercher une action… (ex: Apple, Nestlé, AAPL)',
+  'Actions':           'Rechercher une action… (ex: Apple, AAPL)',
   'ETF':               'Rechercher un ETF… (ex: MSCI World, SPY, VT)',
-  'ETF Oblig.':       'Rechercher une obligation… (ex: TLT, IBTE.L)',
-  'Matières premières':'Rechercher une matière première… (ex: Or, XAU, GC=F)',
-  'Crypto':            'Rechercher une crypto… (ex: Bitcoin, BTC-EUR, ETH)',
-  'Monnaies':          'Rechercher une devise… (ex: EUR/USD, GBPCHF=X)',
+  'Fonds':             'Rechercher un fonds ou ETF obligataire… (ex: TLT, BND)',
+  'Matières premières':'Rechercher une matière première… (ex: Or, XAU/USD)',
+  'Crypto':            'Rechercher une crypto… (ex: Bitcoin, BTC/USD)',
+  'Forex':             'Rechercher une devise… (ex: EUR/USD, USD/CHF)',
   'Tout':              'Rechercher un actif… (ex: AAPL, BTC/USD, EUR/CHF)',
 }
 
@@ -131,7 +163,7 @@ const DEVISES = [
   'CZK', 'KRW', 'INR', 'MXN', 'BRL',
   'ZAR', 'TRY',
 ]
-const CATEGORIES = ['Tout', 'Actions', 'ETF', 'ETF Oblig.', 'Matières premières', 'Crypto', 'Monnaies']
+const CATEGORIES = ['Tout', 'Actions', 'ETF', 'Fonds', 'Matières premières', 'Crypto', 'Forex']
 
 // ─── Profils courtiers ────────────────────────────────────────────────────────
 interface BrokerProfile {
@@ -193,64 +225,73 @@ const BROKER_PROFILES: Record<string, BrokerProfile> = {
 }
 const BROKERS = ['', ...Object.keys(BROKER_PROFILES)]
 
-const CATEGORY_SUGGESTIONS: Record<string, { ticker: string; nom: string; bourse: string; type: string; devise: string; popular?: boolean }[]> = {
-  // Plan gratuit Twelve Data : actions US uniquement
-  // Plan payant → ajouter : { ticker: 'NESN:SIX', nom: 'Nestlé', bourse: 'SIX', type: 'equity', devise: 'CHF' }
+const CATEGORY_SUGGESTIONS: Record<string, { ticker: string; nom: string; bourse: string; type: string; devise: string }[]> = {
   'Actions': [
-    { ticker: 'AAPL',  nom: 'Apple',     bourse: 'NASDAQ', type: 'equity', devise: 'USD', popular: true },
-    { ticker: 'MSFT',  nom: 'Microsoft', bourse: 'NASDAQ', type: 'equity', devise: 'USD', popular: true },
-    { ticker: 'NVDA',  nom: 'NVIDIA',    bourse: 'NASDAQ', type: 'equity', devise: 'USD', popular: true },
-    { ticker: 'TSLA',  nom: 'Tesla',     bourse: 'NASDAQ', type: 'equity', devise: 'USD', popular: true },
-    { ticker: 'GOOGL', nom: 'Alphabet',  bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
-    { ticker: 'AMZN',  nom: 'Amazon',    bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
-    { ticker: 'META',  nom: 'Meta',      bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
-    { ticker: 'ASML',  nom: 'ASML',      bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
-    { ticker: 'JPM',   nom: 'JPMorgan',  bourse: 'NYSE',   type: 'equity', devise: 'USD' },
-    { ticker: 'V',     nom: 'Visa',      bourse: 'NYSE',   type: 'equity', devise: 'USD' },
+    { ticker: 'AAPL',  nom: 'Apple',             bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'MSFT',  nom: 'Microsoft',          bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'NVDA',  nom: 'NVIDIA',             bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'GOOGL', nom: 'Alphabet',           bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'AMZN',  nom: 'Amazon',             bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'META',  nom: 'Meta',               bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'TSLA',  nom: 'Tesla',              bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'AVGO',  nom: 'Broadcom',           bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'JPM',   nom: 'JPMorgan Chase',     bourse: 'NYSE',   type: 'equity', devise: 'USD' },
+    { ticker: 'V',     nom: 'Visa',               bourse: 'NYSE',   type: 'equity', devise: 'USD' },
+    { ticker: 'MA',    nom: 'Mastercard',         bourse: 'NYSE',   type: 'equity', devise: 'USD' },
+    { ticker: 'LLY',   nom: 'Eli Lilly',          bourse: 'NYSE',   type: 'equity', devise: 'USD' },
+    { ticker: 'ASML',  nom: 'ASML Holding',       bourse: 'NASDAQ', type: 'equity', devise: 'USD' },
+    { ticker: 'XOM',   nom: 'ExxonMobil',         bourse: 'NYSE',   type: 'equity', devise: 'USD' },
+    { ticker: 'UNH',   nom: 'UnitedHealth',       bourse: 'NYSE',   type: 'equity', devise: 'USD' },
   ],
-  // Plan gratuit : ETF US uniquement
-  // Plan payant → ajouter : VWCE.DE, IWDA.L, CSPX.L, SMIM.SW etc.
   'ETF': [
-    { ticker: 'SPY', nom: 'SPDR S&P 500',            bourse: 'NYSE',   type: 'etf', devise: 'USD', popular: true },
-    { ticker: 'QQQ', nom: 'Invesco Nasdaq 100',       bourse: 'NASDAQ', type: 'etf', devise: 'USD', popular: true },
-    { ticker: 'VT',  nom: 'Vanguard Total World',     bourse: 'NYSE',   type: 'etf', devise: 'USD', popular: true },
-    { ticker: 'VTI', nom: 'Vanguard US Total Market', bourse: 'NYSE',   type: 'etf', devise: 'USD' },
-    { ticker: 'VOO', nom: 'Vanguard S&P 500',         bourse: 'NYSE',   type: 'etf', devise: 'USD' },
-    { ticker: 'IWM', nom: 'iShares Russell 2000',     bourse: 'NYSE',   type: 'etf', devise: 'USD' },
-    { ticker: 'EFA', nom: 'iShares MSCI EAFE',        bourse: 'NYSE',   type: 'etf', devise: 'USD' },
-    { ticker: 'VWO', nom: 'Vanguard Emerging Markets',bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'SPY',  nom: 'SPDR S&P 500',             bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'QQQ',  nom: 'Invesco Nasdaq 100',        bourse: 'NASDAQ', type: 'etf', devise: 'USD' },
+    { ticker: 'VT',   nom: 'Vanguard Total World',      bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'VTI',  nom: 'Vanguard US Total Market',  bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'VOO',  nom: 'Vanguard S&P 500',          bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'IWM',  nom: 'iShares Russell 2000',      bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'EFA',  nom: 'iShares MSCI EAFE',         bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'VWO',  nom: 'Vanguard Emerging Markets', bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'VXUS', nom: 'Vanguard Total Intl Stock', bourse: 'NASDAQ', type: 'etf', devise: 'USD' },
+    { ticker: 'ARKK', nom: 'ARK Innovation',            bourse: 'NYSE',   type: 'etf', devise: 'USD' },
   ],
-  // ETF obligataires US (NYSE/NASDAQ, couverts plan gratuit)
-  'ETF Oblig.': [
-    { ticker: 'TLT', nom: 'iShares 20Y US Treasury',   bourse: 'NASDAQ', type: 'bond', devise: 'USD', popular: true },
-    { ticker: 'AGG', nom: 'iShares US Aggregate Bond',  bourse: 'NYSE',   type: 'bond', devise: 'USD', popular: true },
-    { ticker: 'BND', nom: 'Vanguard Total Bond Market', bourse: 'NASDAQ', type: 'bond', devise: 'USD' },
-    { ticker: 'LQD', nom: 'iShares Investment Grade',   bourse: 'NYSE',   type: 'bond', devise: 'USD' },
-    { ticker: 'HYG', nom: 'iShares High Yield Corp',    bourse: 'NYSE',   type: 'bond', devise: 'USD' },
+  'Fonds': [
+    { ticker: 'TLT',  nom: 'iShares 20Y US Treasury',       bourse: 'NASDAQ', type: 'etf', devise: 'USD' },
+    { ticker: 'AGG',  nom: 'iShares US Aggregate Bond',      bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'BND',  nom: 'Vanguard Total Bond Market',     bourse: 'NASDAQ', type: 'etf', devise: 'USD' },
+    { ticker: 'LQD',  nom: 'iShares Investment Grade Corp',  bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'HYG',  nom: 'iShares High Yield Corp Bond',   bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'BNDX', nom: 'Vanguard Total Intl Bond',       bourse: 'NASDAQ', type: 'etf', devise: 'USD' },
+    { ticker: 'EMB',  nom: 'iShares JPM USD EM Bond',        bourse: 'NYSE',   type: 'etf', devise: 'USD' },
+    { ticker: 'VCIT', nom: 'Vanguard Interm Corp Bond',      bourse: 'NASDAQ', type: 'etf', devise: 'USD' },
+    { ticker: 'SHY',  nom: 'iShares 1-3Y US Treasury',       bourse: 'NASDAQ', type: 'etf', devise: 'USD' },
+    { ticker: 'IEF',  nom: 'iShares 7-10Y US Treasury',      bourse: 'NASDAQ', type: 'etf', devise: 'USD' },
   ],
-  // Métaux précieux spot (disponibles plan gratuit via paires forex Twelve Data)
-  // Plan payant → décommenter les futures : GC1!, CL1!, NG1!
   'Matières premières': [
-    { ticker: 'XAU/USD', nom: 'Or Spot',      bourse: 'Forex', type: 'forex', devise: 'USD', popular: true },
-    { ticker: 'XAG/USD', nom: 'Argent Spot',  bourse: 'Forex', type: 'forex', devise: 'USD', popular: true },
-    { ticker: 'XPT/USD', nom: 'Platine Spot', bourse: 'Forex', type: 'forex', devise: 'USD' },
-    { ticker: 'XPD/USD', nom: 'Palladium Spot', bourse: 'Forex', type: 'forex', devise: 'USD' },
+    { ticker: 'XAU/USD', nom: 'Or Spot',          bourse: 'Forex', type: 'commodity', devise: 'USD' },
+    { ticker: 'XAG/USD', nom: 'Argent Spot',      bourse: 'Forex', type: 'commodity', devise: 'USD' },
+    { ticker: 'XPT/USD', nom: 'Platine Spot',     bourse: 'Forex', type: 'commodity', devise: 'USD' },
+    { ticker: 'XPD/USD', nom: 'Palladium Spot',   bourse: 'Forex', type: 'commodity', devise: 'USD' },
   ],
-  // Crypto (format Twelve Data : BASE/QUOTE)
   'Crypto': [
-    { ticker: 'BTC/USD', nom: 'Bitcoin',  bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD', popular: true },
-    { ticker: 'ETH/USD', nom: 'Ethereum', bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD', popular: true },
-    { ticker: 'SOL/USD', nom: 'Solana',   bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
-    { ticker: 'BNB/USD', nom: 'BNB',      bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
-    { ticker: 'XRP/USD', nom: 'XRP',      bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'BTC/USD',  nom: 'Bitcoin',    bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'ETH/USD',  nom: 'Ethereum',   bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'SOL/USD',  nom: 'Solana',     bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'BNB/USD',  nom: 'BNB',        bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'XRP/USD',  nom: 'XRP',        bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'ADA/USD',  nom: 'Cardano',    bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'AVAX/USD', nom: 'Avalanche',  bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
+    { ticker: 'DOGE/USD', nom: 'Dogecoin',   bourse: 'Crypto', type: 'cryptocurrency', devise: 'USD' },
   ],
-  // Forex (format Twelve Data : BASE/QUOTE)
-  'Monnaies': [
-    { ticker: 'EUR/USD', nom: 'EUR / USD', bourse: 'Forex', type: 'currency', devise: 'USD', popular: true },
-    { ticker: 'USD/CHF', nom: 'USD / CHF', bourse: 'Forex', type: 'currency', devise: 'CHF', popular: true },
-    { ticker: 'EUR/CHF', nom: 'EUR / CHF', bourse: 'Forex', type: 'currency', devise: 'CHF' },
-    { ticker: 'GBP/CHF', nom: 'GBP / CHF', bourse: 'Forex', type: 'currency', devise: 'CHF' },
-    { ticker: 'GBP/USD', nom: 'GBP / USD', bourse: 'Forex', type: 'currency', devise: 'USD' },
+  'Forex': [
+    { ticker: 'EUR/USD', nom: 'Euro / Dollar',                 bourse: 'Forex', type: 'currency', devise: 'USD' },
+    { ticker: 'USD/CHF', nom: 'Dollar / Franc suisse',         bourse: 'Forex', type: 'currency', devise: 'CHF' },
+    { ticker: 'EUR/CHF', nom: 'Euro / Franc suisse',           bourse: 'Forex', type: 'currency', devise: 'CHF' },
+    { ticker: 'GBP/USD', nom: 'Livre sterling / Dollar',       bourse: 'Forex', type: 'currency', devise: 'USD' },
+    { ticker: 'GBP/CHF', nom: 'Livre sterling / Franc suisse', bourse: 'Forex', type: 'currency', devise: 'CHF' },
+    { ticker: 'USD/JPY', nom: 'Dollar / Yen japonais',         bourse: 'Forex', type: 'currency', devise: 'JPY' },
+    { ticker: 'EUR/GBP', nom: 'Euro / Livre sterling',         bourse: 'Forex', type: 'currency', devise: 'GBP' },
+    { ticker: 'AUD/USD', nom: 'Dollar australien / Dollar',    bourse: 'Forex', type: 'currency', devise: 'USD' },
   ],
 }
 
@@ -329,12 +370,19 @@ function simplifyName(nom: string, ticker: string): string {
     .trim()
 }
 const CAT_COLOR: Record<string, string> = {
-  'Actions': '#4A8573', 'ETF': '#2A4D78', 'ETF Oblig.': '#C4952A',
-  'Matières premières': '#8E6240', 'Crypto': '#3D8A80', 'Monnaies': '#3A7898', 'Tout': '#6A7285',
+  'Actions':            '#7C3AED',
+  'ETF':                '#2563EB',
+  'Fonds':              '#6366F1',
+  'ETF Oblig.':         '#3B82F6',
+  'Crypto':             '#14B8A6',
+  'Forex':              '#60A5FA',
+  'Monnaies':           '#60A5FA',
+  'Matières premières': '#93C5FD',
+  'Tout':               '#4B5563',
 }
 // Set de tickers ETF obligataires connus — utilisé pour retypifier en 'bond' dans tous les contextes
 const BOND_ETF_TICKERS = new Set(
-  (CATEGORY_SUGGESTIONS['ETF Oblig.'] ?? []).map(s => s.ticker)
+  (CATEGORY_SUGGESTIONS['Fonds'] ?? []).map(s => s.ticker)
 )
 const EMPTY_FORM: Omit<Position, 'id'> = {
   nom: '', ticker: '', categorie: 'Tout', devise: 'USD',
@@ -352,7 +400,7 @@ function TickerAutocomplete({
   placeholder?: string
   filterTypes?: string[]   // quoteTypes autorisés (undefined = tous, [] = impossible)
   filterExch?: string[]    // mots-clés exchange (vide = tous)
-  categorySuggestions?: { ticker: string; nom: string; bourse: string; type: string; devise: string; popular?: boolean }[]
+  categorySuggestions?: { ticker: string; nom: string; bourse: string; type: string; devise: string }[]
 }) {
   const [query, setQuery] = useState(value.ticker ? `${value.nom} (${value.ticker})` : '')
   const [results, setResults] = useState<SearchResult[]>([])
@@ -389,7 +437,7 @@ function TickerAutocomplete({
           // Types Twelve Data (via /api/search)
           'action': 'EQUITY', 'etf': 'ETF', 'cryptocurrency': 'CRYPTOCURRENCY',
           'crypto': 'CRYPTOCURRENCY', 'forex': 'CURRENCY', 'currency': 'CURRENCY',
-          'indice': 'EQUITY', 'fonds': 'MUTUALFUND', 'etc': 'ETF', 'etn': 'ETF',
+          'commodity': 'COMMODITY', 'indice': 'EQUITY', 'fonds': 'MUTUALFUND', 'etc': 'ETF', 'etn': 'ETF',
           // Anciens types Yahoo (rétrocompatibilité positions existantes)
           'equity': 'EQUITY', 'future': 'FUTURE', 'futures': 'FUTURE',
           'mutual fund': 'MUTUALFUND', 'mutualfund': 'MUTUALFUND', 'bond': 'BOND',
@@ -488,10 +536,10 @@ function TickerAutocomplete({
     onChange({ ticker: '', nom: '', devise: value.devise, type: '' })
   }
 
-  const inputCls = `w-full bg-white dark:bg-[#1B2D3E] border rounded-lg px-3 py-2 text-sm
-    text-[#1B3050] dark:text-[#E8E4DC] focus:outline-none focus:ring-2 focus:ring-[#2B6B5A]
+  const inputCls = `w-full bg-white dark:bg-[#1E2530] border rounded-sm px-3 py-2 text-sm
+    text-[#1B3050] dark:text-[#E8E4DC] focus:outline-none focus:ring-2 focus:ring-[#14B8A6]
     focus:border-transparent placeholder-[#9E9A93] pr-8
-    ${selected ? 'border-[#2B6B5A]' : 'border-[#DDD9D1] dark:border-[#2a3f52]'}`
+    ${selected ? 'border-[#14B8A6]' : 'border-[#DDD9D1] dark:border-[#323B4A]'}`
 
   return (
     <div ref={ref} className="relative">
@@ -509,7 +557,7 @@ function TickerAutocomplete({
             <span className="text-[#9E9A93] text-xs animate-spin">⟳</span>
           )}
           {selected && (
-            <span className="text-[#2B6B5A] text-xs">✓</span>
+            <span className="text-[#14B8A6] text-xs">✓</span>
           )}
           {query && (
             <button type="button" onClick={handleClear} className="text-[#9E9A93] hover:text-[#5C6880] text-sm leading-none ml-0.5">×</button>
@@ -519,21 +567,19 @@ function TickerAutocomplete({
 
       {/* Dropdown résultats */}
       {open && results.length > 0 && (
-        <div className="absolute z-50 w-full mt-1 bg-white dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-lg shadow-lg overflow-hidden">
+        <div className="absolute z-50 w-full mt-1 bg-white dark:bg-[#1E2530] border border-[#DDD9D1] dark:border-[#323B4A] rounded-sm shadow-lg overflow-hidden">
           {results.map((r) => (
             <button
               key={r.ticker}
               type="button"
               onClick={() => handleSelect(r)}
-              className="w-full text-left px-3 py-2.5 hover:bg-[#F5F3EF] dark:hover:bg-[#162534] transition-colors flex items-center gap-3 border-b border-[#F5F3EF] dark:border-[#0F1E2C] last:border-0"
+              className="w-full text-left px-3 py-2.5 hover:bg-[#F5F3EF] dark:hover:bg-[#253040] transition-colors flex items-center gap-3 border-b border-[#F5F3EF] dark:border-[#2A3240] last:border-0"
             >
-              <span className="text-lg flex-shrink-0 w-6 text-center">{typeIcon(r.type)}</span>
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium text-[#1B3050] dark:text-[#E8E4DC] truncate">{simplifyName(r.nom, r.ticker)}</div>
                 <div className="text-xs text-[#9E9A93] flex items-center gap-1.5 mt-0.5">
-                  <span className="font-mono font-semibold text-[#2B6B5A]">{r.ticker}</span>
+                  <span className="font-mono font-semibold text-[#14B8A6]">{r.ticker}</span>
                   {r.bourse && <><span>·</span><span>{r.bourse}</span></>}
-                  {r.type && <><span>·</span><span>{r.type}</span></>}
                 </div>
               </div>
               <span className="text-xs font-mono text-[#9E9A93] flex-shrink-0">{r.devise}</span>
@@ -543,47 +589,30 @@ function TickerAutocomplete({
       )}
 
       {/* Suggestions par catégorie (quand champ vide) */}
-      {open && !query && results.length === 0 && categorySuggestions && categorySuggestions.length > 0 && (() => {
-        const popular = categorySuggestions.filter(r => r.popular)
-        const others  = categorySuggestions.filter(r => !r.popular)
-        const SuggRow = ({ r }: { r: typeof categorySuggestions[0] }) => (
-          <button
-            key={r.ticker}
-            type="button"
-            onClick={() => handleSelect(r)}
-            className="w-full text-left px-3 py-2.5 hover:bg-[#F5F3EF] dark:hover:bg-[#162534] transition-colors flex items-center gap-3 border-b border-[#F5F3EF] dark:border-[#0F1E2C] last:border-0"
-          >
-            <span className="text-lg flex-shrink-0 w-6 text-center">{typeIcon(r.type)}</span>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-[#1B3050] dark:text-[#E8E4DC] truncate">{r.nom}</div>
-              <div className="text-xs text-[#9E9A93] flex items-center gap-1.5 mt-0.5">
-                <span className="font-mono font-semibold text-[#2B6B5A]">{r.ticker}</span>
-                {r.bourse && <><span>·</span><span>{r.bourse}</span></>}
+      {open && !query && results.length === 0 && categorySuggestions && categorySuggestions.length > 0 && (
+        <div className="absolute z-50 w-full mt-1 bg-white dark:bg-[#1E2530] border border-[#DDD9D1] dark:border-[#323B4A] rounded-sm shadow-lg overflow-hidden max-h-72 overflow-y-auto">
+          {categorySuggestions.map(r => (
+            <button
+              key={r.ticker}
+              type="button"
+              onClick={() => handleSelect(r)}
+              className="w-full text-left px-3 py-2.5 hover:bg-[#F5F3EF] dark:hover:bg-[#253040] transition-colors flex items-center gap-3 border-b border-[#F5F3EF] dark:border-[#2A3240] last:border-0"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-[#1B3050] dark:text-[#E8E4DC] truncate">{r.nom}</div>
+                <div className="text-xs text-[#9E9A93] flex items-center gap-1.5 mt-0.5">
+                  <span className="font-mono font-semibold text-[#14B8A6]">{r.ticker}</span>
+                  {r.bourse && <><span>·</span><span>{r.bourse}</span></>}
+                </div>
               </div>
-            </div>
-            <span className="text-xs font-mono text-[#9E9A93] flex-shrink-0">{r.devise}</span>
-          </button>
-        )
-        return (
-          <div className="absolute z-50 w-full mt-1 bg-white dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-lg shadow-lg overflow-hidden">
-            {popular.length > 0 && <>
-              <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#9E9A93] border-b border-[#F5F3EF] dark:border-[#0F1E2C] flex items-center gap-1.5">
-                <span>⭐</span><span>Populaires</span>
-              </div>
-              {popular.map(r => <SuggRow key={r.ticker} r={r} />)}
-            </>}
-            {others.length > 0 && <>
-              <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#9E9A93] border-b border-[#F5F3EF] dark:border-[#0F1E2C] border-t border-t-[#EAE7E2] dark:border-t-[#1a2e3e]">
-                Autres
-              </div>
-              {others.map(r => <SuggRow key={r.ticker} r={r} />)}
-            </>}
-          </div>
-        )
-      })()}
+              <span className="text-xs font-mono text-[#9E9A93] flex-shrink-0">{r.devise}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {open && !loading && results.length === 0 && query.length >= 2 && (
-        <div className="absolute z-50 w-full mt-1 bg-white dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-lg shadow-lg px-4 py-3 text-sm text-[#9E9A93]">
+        <div className="absolute z-50 w-full mt-1 bg-white dark:bg-[#1E2530] border border-[#DDD9D1] dark:border-[#323B4A] rounded-sm shadow-lg px-4 py-3 text-sm text-[#9E9A93]">
           <div>Aucun résultat pour "{query}"</div>
           {(filterTypes !== undefined && filterTypes.length === 0) && (
             <div className="text-xs mt-1 text-amber-600 dark:text-amber-400">
@@ -649,14 +678,13 @@ function makeLookupClose(histJson: Record<string, { dates: string[]; closes: num
 }
 
 // ─── Chart: Evolution ─────────────────────────────────────────────────────────
-const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom, dateTo, bustKey = 0 }: { data: PositionCalc[]; showFX?: boolean; range?: 'all' | '60d' | 'weekly'; dateFrom?: string; dateTo?: string; bustKey?: number }) {
-  const W = 600, H = 200, PAD = { t: 18, r: 16, b: 40, l: 72 }
-  const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
+const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval = '1day', dateFrom, dateTo, bustKey = 0, downsampleEvery = 1 }: { data: PositionCalc[]; showFX?: boolean; range?: 'all' | '60d' | 'weekly'; interval?: '1day' | '1h' | '4h' | '5min'; dateFrom?: string; dateTo?: string; bustKey?: number; downsampleEvery?: number }) {
+  const H = 200, PAD = { t: 10, r: 10, b: 10, l: 10 }
 
   const [monthlyPts, setMonthlyPts] = useState<{ x: number; cost: number; value: number; valueNoFX: number; label: string }[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState(0)
-  const [showInvesti, setShowInvesti] = useState(true)
+  const showInvesti = true
   const [showValeur, setShowValeur] = useState(true)
   const [showHorsFX, setShowHorsFX] = useState(true)
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
@@ -664,6 +692,16 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
   const [zoomWEvol, setZoomWEvol] = useState<[number, number]>([0, 1])
   const zoomDragEvol = useRef<{ startX: number; startZoom: [number, number] } | null>(null)
   const _bustLastSeen = useRef(0)
+  const [measuredW, setMeasuredW] = useState(0)
+  const chartProbeRef = useCallback((node: SVGSVGElement | null) => {
+    if (!node) return
+    const update = () => setMeasuredW(node.getBoundingClientRect().width)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(node)
+  }, [])
+  const W = measuredW > 0 ? measuredW : 600
+  const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
 
   // Drawdown calculé sur le PnL nominal (comme PnLChart) — inclut delta lots pour cohérence
   const { dates, firstDate, totalMs } = useMemo(() => {
@@ -671,6 +709,28 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
     const sorted = [...data].filter(p => p.quantite > 0).sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
     if (sorted.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
     const today = new Date()
+    const pad2b = (n: number) => String(n).padStart(2, '0')
+    if (interval === '5min') {
+      const start = dateFrom ? new Date(dateFrom + 'T00:00:00') : new Date(); start.setHours(0,0,0,0)
+      const end = new Date(); const list: string[] = []
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 5*60*1000))
+        list.push(`${d.getFullYear()}-${pad2b(d.getMonth()+1)}-${pad2b(d.getDate())} ${pad2b(d.getHours())}:${pad2b(d.getMinutes())}:00`)
+      return { dates: list, firstDate: start, totalMs: (end.getTime() - start.getTime()) || 1 }
+    }
+    if (interval === '1h') {
+      const start = dateFrom ? new Date(dateFrom + 'T00:00:00') : (() => { const d = new Date(); d.setDate(d.getDate()-7); d.setHours(0,0,0,0); return d })()
+      const end = new Date(); const list: string[] = []
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 60*60*1000))
+        list.push(`${d.getFullYear()}-${pad2b(d.getMonth()+1)}-${pad2b(d.getDate())} ${pad2b(d.getHours())}:00:00`)
+      return { dates: list, firstDate: start, totalMs: (end.getTime() - start.getTime()) || 1 }
+    }
+    if (interval === '4h') {
+      const start = dateFrom ? new Date(dateFrom + 'T00:00:00') : (() => { const d = new Date(); d.setMonth(d.getMonth()-1); d.setHours(0,0,0,0); return d })()
+      const end = new Date(); const list: string[] = []
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 4*60*60*1000))
+        list.push(`${d.getFullYear()}-${pad2b(d.getMonth()+1)}-${pad2b(d.getDate())} ${pad2b(d.getHours())}:00:00`)
+      return { dates: list, firstDate: start, totalMs: (end.getTime() - start.getTime()) || 1 }
+    }
     if (range === '60d') {
       const list: string[] = []
       if (dateFrom && dateTo) {
@@ -715,9 +775,9 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
       dMonth++; if (dMonth > 11) { dMonth = 0; dYear++ }
     }
     return { dates: list, firstDate: startMonth, totalMs: (today.getTime() - startMonth.getTime()) || 1 }
-  }, [data, range, dateFrom, dateTo])
+  }, [data, range, interval, dateFrom, dateTo])
 
-  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + bustKey, [data, range, bustKey])
+  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + (interval ?? '1day') + '|' + (dateFrom ?? '') + '|' + (dateTo ?? '') + '|' + bustKey + '|' + downsampleEvery, [data, range, interval, dateFrom, dateTo, bustKey, downsampleEvery])
 
   useEffect(() => {
     if (data.length === 0 || dates.length === 0) return
@@ -732,10 +792,8 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
       const allTickers = [...new Set(data.map(p => p.ticker.toUpperCase()))]
       const fxPairs = [...new Set(data.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
       const isBust = bustKey > _bustLastSeen.current; _bustLastSeen.current = bustKey
-      const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust) as Record<string, { dates: string[]; closes: number[] }>
+      const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust, interval) as Record<string, { dates: string[]; closes: number[] }>
       const lookupClose = makeLookupClose(histJson)
-      // Pré-calcul unique : date la plus ancienne couverte par l'historique
-      const histStart = Object.values(histJson).map(h => h.dates[0]).filter(Boolean).sort()[0] ?? ''
 
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
@@ -753,12 +811,9 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
           const s = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
           return s <= today ? s : today
         })() : dateStr
-        const isToday = evalDateStr >= today
+        const isToday = (interval === '5min' || interval === '1h' || interval === '4h') ? false : evalDateStr >= today
         const activePosns = data.filter(p => p.dateAchat <= evalDateStr)
         if (activePosns.length === 0) { setProgress(Math.round((i + 1) / dates.length * 100)); continue }
-
-        // histStart computed once above the loop (not per iteration)
-        const useOldest = !isToday && evalDateStr < histStart
 
         const prices = await Promise.all(activePosns.map(async p => {
           if (!isToday) {
@@ -768,17 +823,13 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
               const fxRate = fxPair ? (lookupClose(fxPair, evalDateStr) ?? p.tauxActuelCHF) : 1
               return { price, fxRate }
             }
-            // Date is before history window: use oldest history price (avoids rate-limiting Yahoo)
-            if (useOldest) {
-              const h = histJson[p.ticker.toUpperCase()]
-              const fxKey = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
-              const hFx = fxKey ? histJson[fxKey.toUpperCase()] : null
-              const price0 = h?.closes[0] ?? p.prixAchat
-              const fxRate0 = hFx?.closes[0] ?? p.tauxAchatCHF
-              return { price: price0, fxRate: fxRate0 }
-            }
+            // Pas de prix dans l'hist pour cette date → oldest known (évite tout appel API supplémentaire)
+            const h = histJson[p.ticker.toUpperCase()]
+            const fxKey = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
+            const hFx = fxKey ? histJson[fxKey.toUpperCase()] : null
+            return { price: h?.closes[0] ?? p.prixAchat, fxRate: hFx?.closes[0] ?? p.tauxAchatCHF }
           }
-          const d = await fetchPriceCached(p.ticker, p.devise, isToday ? undefined : evalDateStr)
+          const d = await fetchPriceCached(p.ticker, p.devise, undefined)
           return d ?? { price: p.prixActuel, fxRate: p.tauxActuelCHF }
         }))
 
@@ -793,9 +844,23 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
           return s + p.quantite * prices[j].price * p.tauxAchatCHF
         }, 0)
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
-        const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
+        const label = (interval === '5min') ? fmtTime(dateStr) : (interval === '1h' || interval === '4h') ? fmtHourDay(dateStr) : range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
         result.push({ x: isToday ? 1 : t, cost: cumCost, value, valueNoFX, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
+      }
+      // ─── Point temps réel (valeur actuelle précise via fetchPriceCached) ──────────
+      if (!cancelled) {
+        const nowActivePosns = data.filter(p => p.dateAchat <= today)
+        if (nowActivePosns.length > 0) {
+          const nowPrices = await Promise.all(nowActivePosns.map(async p => {
+            const d = await fetchPriceCached(p.ticker, p.devise, undefined)
+            return d ?? { price: p.prixActuel, fxRate: p.tauxActuelCHF }
+          }))
+          const nowValue = nowActivePosns.reduce((s, p, j) => s + p.quantite * nowPrices[j].price * nowPrices[j].fxRate, 0)
+          const nowValueNoFX = nowActivePosns.reduce((s, p, j) => s + p.quantite * nowPrices[j].price * p.tauxAchatCHF, 0)
+          const nowCost = nowActivePosns.reduce((s, p) => s + (p.quantite > 0 ? p.coutCHF : -p.coutCHF), 0)
+          result.push({ x: 1, cost: nowCost, value: nowValue, valueNoFX: nowValueNoFX, label: 'Maintenant' })
+        }
       }
       // Normaliser la valeur actuelle pour qu'elle parte du même point que la valeur investie
       // à la première semaine/mois avec des positions
@@ -807,7 +872,22 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
           for (const pt of result) { pt.value -= offV; pt.valueNoFX -= offVNoFX }
         }
       }
-      if (!cancelled) { setMonthlyPts(result); setLoading(false) }
+      // YTD/1M/1Y : ancrer la courbe au bord gauche avec la première vraie valeur
+      if (interval === '1day' && dateFrom && result.length > 0 && result[0].x > 0.001) {
+        result[0].x = 0
+      }
+      // Supprime les points consécutifs où la valeur (et le coût) ne changent pas — tous intervalles
+      const deduped = result.length > 1
+        ? result.filter((pt, i) => i === 0
+            || Math.abs(pt.value - result[i - 1].value) > 0.001
+            || Math.abs(pt.cost  - result[i - 1].cost)  > 0.001)
+        : result
+      // Espacement uniforme entre points (ignore l'écart de temps réel)
+      const finalResult = deduped.length > 1
+        ? deduped.map((pt, i) => ({ ...pt, x: i / (deduped.length - 1) }))
+        : deduped
+      const sampledResult = downsampleEvery > 1 ? finalResult.filter((_, i) => i % downsampleEvery === 0 || i === finalResult.length - 1) : finalResult
+      if (!cancelled) { setMonthlyPts(sampledResult); setLoading(false) }
     }
     fetchAll()
     return () => { cancelled = true }
@@ -817,7 +897,7 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
   if (loading) return (
     <div className="flex flex-col items-center justify-center h-36 gap-2">
       <div className="w-48 h-1.5 bg-[#DDD9D1] dark:bg-[#2a3f52] rounded-full overflow-hidden">
-        <div className="h-full bg-[#2B6B5A] rounded-full transition-all" style={{ width: `${progress}%` }} />
+        <div className="h-full bg-[#14B8A6] rounded-full transition-all" style={{ width: `${progress}%` }} />
       </div>
       <p className="text-xs text-[#9E9A93]">{range === '60d' ? 'Chargement 60 jours…' : range === 'weekly' ? 'Chargement des données hebdomadaires…' : 'Chargement des données mensuelles…'} {progress}%</p>
     </div>
@@ -861,17 +941,69 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
 
   const hovered = hoverIdx !== null ? points[hoverIdx] : null
 
+  const _dispPt = hovered ?? (points ? points[points.length - 1] : null)
+  const _dispGain = _dispPt ? _dispPt.value - _dispPt.cost : 0
+  const _dispGainPct = _dispPt && _dispPt.cost > 0 ? (_dispGain / _dispPt.cost) * 100 : 0
+  const _dispGainNoFX = _dispPt ? _dispPt.valueNoFX - _dispPt.cost : 0
+  const _dispGainNoFXPct = _dispPt && _dispPt.cost > 0 ? (_dispGainNoFX / _dispPt.cost) * 100 : 0
+
   return (
     <>
+    {/* ── Stat header + toggle buttons ── */}
+    <div className="flex items-start justify-between mb-3 px-5">
+      <div className="min-h-[52px]">
+        {_dispPt ? (
+          <>
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className="text-2xl font-bold tabular-nums text-[#1B3050] dark:text-white">
+                {_dispPt.value.toFixed(2)} CHF
+              </span>
+              <span className={`text-sm font-semibold tabular-nums ${_dispGain >= 0 ? 'text-[#14B8A6]' : 'text-[#EF4444]'}`}>
+                {_dispGain >= 0 ? '+' : ''}{_dispGain.toFixed(2)} CHF
+                {' '}({_dispGain >= 0 ? '+' : ''}{_dispGainPct.toFixed(2)}%)
+              </span>
+              {showHorsFX && _dispPt && (
+                <span className={`text-sm font-semibold tabular-nums text-[#1B5C80]`}>
+                  Hors FX {_dispGainNoFX >= 0 ? '+' : ''}{_dispGainNoFX.toFixed(2)} CHF
+                  {_dispPt.cost > 0 && <> ({_dispGainNoFX >= 0 ? '+' : ''}{_dispGainNoFXPct.toFixed(2)}%)</>}
+                </span>
+              )}
+            </div>
+            <div className="mt-0.5">
+              <span className="text-xs text-[#9E9A93] tabular-nums">Investi&nbsp;{_dispPt.cost.toFixed(2)} CHF</span>
+            </div>
+          </>
+        ) : null}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+        <button type="button" onClick={() => setShowValeur(v => !v)}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-all ${showValeur ? 'border-[#14B8A6] bg-[#F5F3EF] dark:bg-[#1E2530]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-40'}`}>
+          <svg width="20" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="#14B8A6" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#EF4444" strokeWidth="2" /></svg>
+          <span className="text-[#9E9A93]">Valeur actuelle</span>
+        </button>
+        <button type="button" onClick={() => setShowHorsFX(v => !v)}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-all ${showHorsFX ? 'border-[#1B5C80] bg-[#F5F3EF] dark:bg-[#1E2530]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-40'}`}>
+          <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="6 3" opacity="0.7" /></svg>
+          <span style={{ color: '#1B5C80' }}>Hors FX</span>
+        </button>
+        <span className="relative inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-[#EDEAE4] dark:bg-[#323B4A] text-[#9E9A93] text-[9px] font-bold cursor-help group/tipEvol">
+          ?
+          <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 px-2 py-1 bg-[#1B3050] dark:bg-[#253040] text-white text-[10px] rounded opacity-0 group-hover/tipEvol:opacity-100 transition-opacity z-50 leading-relaxed">
+            <span className="block whitespace-nowrap"><span className="font-semibold text-[#14B8A6]">Valeur actuelle</span> — valeur totale du portefeuille au fil du temps</span>
+            <span className="block whitespace-nowrap"><span className="font-semibold text-[#1B5C80]">Hors FX</span> — valeur sans l&apos;effet des variations de change (FX figé à l&apos;achat)</span>
+          </span>
+        </span>
+      </div>
+    </div>
     {isZoomedEvol && (
-      <div className="flex justify-end mb-1">
+      <div className="flex justify-end mb-1 px-5">
         <button type="button" onClick={() => setZoomWEvol([0, 1])}
-          className="text-xs text-[#9E9A93] hover:text-[#2B6B5A] px-2 py-0.5 rounded border border-[#DDD9D1] dark:border-[#2a3f52]">
+          className="text-xs text-[#9E9A93] hover:text-[#14B8A6] px-2 py-0.5 rounded border border-[#DDD9D1] dark:border-[#323B4A]">
           ↺ Réinitialiser zoom
         </button>
       </div>
     )}
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H, cursor: isZoomedEvol ? 'grab' : 'default' }}
+    <svg ref={chartProbeRef} viewBox={`0 0 ${W} ${H}`} style={{ display: 'block', width: '100%', height: H, cursor: isZoomedEvol ? 'grab' : 'default' }}
       onMouseLeave={() => { setHoverIdx(null); setHoverMxEvol(null); zoomDragEvol.current = null }}
       onMouseDown={e => {
         if (!isZoomedEvol) return
@@ -897,7 +1029,7 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
           const d = Math.abs(p.x - t); if (d < bd) { bd = d; best = i }
         })
         if (best < 0) return
-        setHoverIdx(best); setHoverMxEvol(Math.max(px(firstVisE.x), Math.min(mx, px(lastVisE.x))))
+        setHoverIdx(best); setHoverMxEvol(px(points[best].x))
       }}
       onWheel={e => {
         e.preventDefault()
@@ -913,125 +1045,86 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, dateFrom,
       <defs>
         <clipPath id="eg-clip"><rect x={PAD.l} y={PAD.t} width={iW} height={iH} /></clipPath>
         <linearGradient id="eg-gain" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#2B6B5A" stopOpacity="0.28" />
-          <stop offset="100%" stopColor="#2B6B5A" stopOpacity="0.04" />
+          <stop offset="0%" stopColor="#14B8A6" stopOpacity="0.28" />
+          <stop offset="100%" stopColor="#14B8A6" stopOpacity="0.04" />
         </linearGradient>
         <linearGradient id="eg-loss" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#DC2626" stopOpacity="0.04" />
-          <stop offset="100%" stopColor="#DC2626" stopOpacity="0.22" />
+          <stop offset="0%" stopColor="#EF4444" stopOpacity="0.04" />
+          <stop offset="100%" stopColor="#EF4444" stopOpacity="0.22" />
         </linearGradient>
         <linearGradient id="eg-cost" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#5C6880" stopOpacity="0.08" />
           <stop offset="100%" stopColor="#5C6880" stopOpacity="0" />
         </linearGradient>
       </defs>
-      {tickVals.map((v, i) => (
-        <g key={i}>
-          <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)} stroke="#E2DDD6" strokeWidth="0.4" strokeDasharray="4 4" />
-          <text x={PAD.l - 6} y={py(v) + 4} textAnchor="end" fontSize="10" fill="#9E9A93">
-            {(() => {
-              const kDec = niceStepVis >= 1000 ? 0 : niceStepVis >= 100 ? 1 : 2
-              const dec  = niceStepVis < 1 ? 1 : 0
-              return Math.abs(v) >= 1000
-                ? `${(v / 1000).toFixed(kDec)}k`
-                : v.toFixed(dec)
-            })()}
-          </text>
-        </g>
-      ))}
       <g clipPath="url(#eg-clip)">
-      {showInvesti && <path d={`${costPath} L ${px(points[points.length-1].x)} ${py(minVVis)} L ${px(points[0].x)} ${py(minVVis)} Z`} fill="url(#eg-cost)" />}
-      {showValeur && gainD && <path d={gainD} fill="url(#eg-gain)" />}
-      {showValeur && lossD && <path d={lossD} fill="url(#eg-loss)" />}
+      {showValeur && gainD && <path d={gainD} fill="none" />}
+      {showValeur && lossD && <path d={lossD} fill="none" />}
+      {showHorsFX && <path
+          d={points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${px(p.x)} ${py(p.valueNoFX)}`).join(' ')}
+          fill="none" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="6 3" opacity="0.7"
+        />}
       {showInvesti && <path d={costPath} fill="none" stroke="var(--finv-cost-line)" strokeWidth="1" strokeDasharray="6 3" />}
-      {showValeur && points.slice(0, -1).map((p0, i) => {
-        const p1 = points[i + 1]
-        const d0 = p0.value - p0.cost, d1 = p1.value - p1.cost
-        if (d0 >= 0 && d1 >= 0) {
-          return <line key={i} x1={px(p0.x)} y1={py(p0.value)} x2={px(p1.x)} y2={py(p1.value)} stroke="#2B6B5A" strokeWidth="2.5" strokeLinecap="round" />
-        } else if (d0 <= 0 && d1 <= 0) {
-          return <line key={i} x1={px(p0.x)} y1={py(p0.value)} x2={px(p1.x)} y2={py(p1.value)} stroke="#DC2626" strokeWidth="2.5" strokeLinecap="round" />
-        } else {
-          const t = d0 / (d0 - d1)
-          const cx = px(p0.x) + t * (px(p1.x) - px(p0.x))
-          const cy = py(p0.value) + t * (py(p1.value) - py(p0.value))
-          return (
-            <g key={i}>
-              <line x1={px(p0.x)} y1={py(p0.value)} x2={cx} y2={cy} stroke={d0 > 0 ? '#2B6B5A' : '#DC2626'} strokeWidth="2.5" strokeLinecap="round" />
-              <line x1={cx} y1={cy} x2={px(p1.x)} y2={py(p1.value)} stroke={d0 > 0 ? '#DC2626' : '#2B6B5A'} strokeWidth="2.5" strokeLinecap="round" />
-            </g>
-          )
+      {showValeur && (() => {
+        const R = 4
+        const rndPath = (pts: [number,number][]) => {
+          if (pts.length < 2) return ''
+          if (pts.length === 2) return `M${pts[0][0]},${pts[0][1]} L${pts[1][0]},${pts[1][1]}`
+          let d = `M${pts[0][0]},${pts[0][1]}`
+          for (let i = 1; i < pts.length - 1; i++) {
+            const [ax,ay]=pts[i-1],[bx,by]=pts[i],[cx2,cy2]=pts[i+1]
+            const d1=Math.sqrt((bx-ax)**2+(by-ay)**2), d2=Math.sqrt((cx2-bx)**2+(cy2-by)**2)
+            const r=Math.min(R,d1/2,d2/2)
+            d+=` L${bx-r*(bx-ax)/d1},${by-r*(by-ay)/d1} Q${bx},${by} ${bx+r*(cx2-bx)/d2},${by+r*(cy2-by)/d2}`
+          }
+          return d+` L${pts[pts.length-1][0]},${pts[pts.length-1][1]}`
         }
-      })}
+        const runs: { color: string; pts: [number,number][] }[] = []
+        let curColor = '', curPts: [number,number][] = []
+        const flush = () => { if (curPts.length > 1) runs.push({ color: curColor, pts: [...curPts] }); curPts = [] }
+        const addSeg = (x1: number, y1: number, x2: number, y2: number, col: string) => {
+          if (col !== curColor) { flush(); curColor = col; curPts = [[x1,y1],[x2,y2]] }
+          else { if (curPts.length === 0) curPts = [[x1,y1]]; curPts.push([x2,y2]) }
+        }
+        points.slice(0, -1).forEach((p0, i) => {
+          const p1 = points[i + 1]
+          const d0 = p0.value - p0.cost, d1 = p1.value - p1.cost
+          if (d0 >= 0 && d1 >= 0) {
+            addSeg(px(p0.x), py(p0.value), px(p1.x), py(p1.value), '#14B8A6')
+          } else if (d0 <= 0 && d1 <= 0) {
+            addSeg(px(p0.x), py(p0.value), px(p1.x), py(p1.value), '#EF4444')
+          } else {
+            const t = d0 / (d0 - d1)
+            const cx = px(p0.x) + t * (px(p1.x) - px(p0.x))
+            const cy = py(p0.value) + t * (py(p1.value) - py(p0.value))
+            addSeg(px(p0.x), py(p0.value), cx, cy, d0 > 0 ? '#14B8A6' : '#EF4444')
+            addSeg(cx, cy, px(p1.x), py(p1.value), d0 > 0 ? '#EF4444' : '#14B8A6')
+          }
+        })
+        flush()
+        return runs.map((r, i) => <path key={i} d={rndPath(r.pts)} fill="none" stroke={r.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />)
+      })()}
+      </g>
       {hovered && (() => {
         const g = hovered.value - hovered.cost
-        const gNoFX = hovered.valueNoFX - hovered.cost
-        const lines: { label: string; val: number; col: string }[] = []
-        if (showValeur) lines.push({ label: 'Valeur', val: hovered.value, col: g >= 0 ? '#4ADE80' : '#F87171' })
-        if (showInvesti) lines.push({ label: 'Investi', val: hovered.cost, col: '#9E9A93' })
-        if (showHorsFX) lines.push({ label: 'Hors FX', val: hovered.valueNoFX, col: gNoFX >= 0 ? '#F59E0B' : '#F87171' })
-        const bh = 16 + Math.max(lines.length, 1) * 16
-        const refV = showValeur ? hovered.value : showHorsFX ? hovered.valueNoFX : hovered.cost
-        const ty = py(refV) - 10
-        const tx = Math.min(Math.max(px(hovered.x), PAD.l + 70), W - PAD.r - 70)
+        const mx = hoverMxEvol ?? px(hovered.x)
+        const lx = Math.min(Math.max(mx, PAD.l + 22), W - PAD.r - 22)
+        const labelAbove = py(hovered.value) < PAD.t + 28
+        const ly = labelAbove ? py(hovered.value) + 20 : py(hovered.value) - 28
         return (
           <g>
-            <line x1={hoverMxEvol ?? px(hovered.x)} y1={PAD.t} x2={hoverMxEvol ?? px(hovered.x)} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
-            {showValeur && <circle cx={px(hovered.x)} cy={py(hovered.value)} r="3.5" fill={g >= 0 ? '#2B6B5A' : '#DC2626'} />}
-            {showInvesti && <circle cx={px(hovered.x)} cy={py(hovered.cost)} r="3" fill="#9E9A93" />}
-            {showHorsFX && <circle cx={px(hovered.x)} cy={py(hovered.valueNoFX)} r="3" fill="#B5820F" />}
-            <g transform={`translate(${tx}, ${ty < PAD.t + bh + 4 ? PAD.t + bh + 4 : ty})`}>
-              <rect x="-70" y={-bh} width="140" height={bh + 6} rx="5" fill="#1A2920" stroke="#2D4A38" strokeWidth="0.6" opacity="0.96" />
-              <text x="0" y={-(bh - 13)} textAnchor="middle" fontSize="10" fontWeight="500" fill="#B8B3AB">{hovered.label}</text>
-              {lines.map((l, i) => (
-                <g key={i}>
-                  <text x="-6" y={-(bh - 13) + 15 + i * 16} textAnchor="end" fontSize="10" fill="#7A766F">{l.label}</text>
-                  <text x="6" y={-(bh - 13) + 15 + i * 16} textAnchor="start" fontSize="11" fontWeight="600" fill={l.col}>{l.val >= 1000 || l.val <= -1000 ? `${(l.val/1000).toFixed(1)}k` : l.val.toFixed(0)} CHF</text>
-                </g>
-              ))}
+            <line x1={mx} y1={PAD.t} x2={mx} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
+            {showValeur && <circle cx={px(hovered.x)} cy={py(hovered.value)} r="4" fill={g >= 0 ? '#14B8A6' : '#EF4444'} />}
+            <g transform={`translate(${lx}, ${ly})`}>
+              <rect x="-22" y="-9" width="44" height="18" rx="4" fill="#0f1f18" stroke="#2D4A38" strokeWidth="0.6" opacity="0.92" />
+              <text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="500" fill="#B8B3AB">{hovered.label}</text>
             </g>
           </g>
         )
       })()}
-      {showHorsFX && <path
-          d={points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${px(p.x)} ${py(p.valueNoFX)}`).join(' ')}
-          fill="none" stroke="#B5820F" strokeWidth="1.5" strokeDasharray="6 3" opacity="0.7"
-        />}
-      {showValeur && <><circle cx={px(points[points.length-1].x)} cy={py(lastVal)} r="7" fill="none" stroke={lastVal >= points[points.length-1].cost ? '#2B6B5A' : '#DC2626'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(lastVal)} r="4" fill={lastVal >= points[points.length-1].cost ? '#2B6B5A' : '#DC2626'} /></>}
-      </g>
-      {(() => {
-        const _vp = visPtsE; const _n = _vp.length
-        if (_n === 0) return null
-        const _maxL = Math.max(2, Math.min(5, Math.floor(iW / 88)))
-        const _step = Math.max(1, Math.ceil(_n / _maxL))
-        const _idxs: number[] = [0]
-        for (let _i = _step; _i < _n - 1; _i += _step) _idxs.push(_i)
-        _idxs.push(_n - 1)
-        if (_idxs.length > 1 && (_vp[_n - 1].x - _vp[_idxs[_idxs.length - 2]].x) * iW < 44) _idxs.splice(_idxs.length - 2, 1)
-        return _idxs.map(idx => {
-          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]; const isFst = idx === 0
-          const _x = isFst || isLst ? px(p.x) : Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))
-          return <text key={idx} x={_x} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
-        })
-      })()}
+      {showValeur && <><circle cx={px(points[points.length-1].x)} cy={py(lastVal)} r="7" fill="none" stroke={lastVal >= points[points.length-1].cost ? '#14B8A6' : '#EF4444'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(lastVal)} r="4" fill={lastVal >= points[points.length-1].cost ? '#14B8A6' : '#EF4444'} /></>}
     </svg>
-    <div className="flex items-center gap-2 mt-2 flex-wrap">
-      <button type="button" onClick={() => setShowInvesti(v => !v)}
-        className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs transition-all ${showInvesti ? 'border-[#C8BC9E] bg-[#F5F3EF] dark:bg-[#1B2D3E]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-40'}`}>
-        <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="var(--finv-cost-line)" strokeWidth="1" strokeDasharray="6 3" /></svg>
-        <span className="text-[#9E9A93]">Investi</span>
-      </button>
-      <button type="button" onClick={() => setShowValeur(v => !v)}
-        className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs transition-all ${showValeur ? 'border-[#2B6B5A] bg-[#F5F3EF] dark:bg-[#1B2D3E]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-40'}`}>
-        <svg width="20" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="#2B6B5A" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#DC2626" strokeWidth="2" /></svg>
-        <span className="text-[#9E9A93]">Valeur actuelle</span>
-      </button>
-      <button type="button" onClick={() => setShowHorsFX(v => !v)}
-        className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs transition-all ${showHorsFX ? 'border-[#B5820F] bg-[#F5F3EF] dark:bg-[#1B2D3E]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-40'}`}>
-        <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#B5820F" strokeWidth="1.5" strokeDasharray="6 3" opacity="0.7" /></svg>
-        <span style={{ color: '#B5820F' }}>Hors FX</span>
-      </button>
-    </div>
+
     </>
   )
 })
@@ -1042,13 +1135,14 @@ function inflationBetween(dateAchat: string, dateTo: string): number {
   return cpiAt(dateTo) / cpiAt(dateAchat) - 1
 }
 
-const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, bustKey = 0 }: { data: PositionCalc[]; range?: 'all' | '60d' | 'weekly'; dateFrom?: string; dateTo?: string; bustKey?: number }) {
+const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', dateFrom, dateTo, bustKey = 0, downsampleEvery = 1 }: { data: PositionCalc[]; range?: 'all' | '60d' | 'weekly'; interval?: '1day' | '1h' | '4h' | '5min'; dateFrom?: string; dateTo?: string; bustKey?: number; downsampleEvery?: number }) {
   const [showNominal, setShowNominal] = useState(true)
   const [showReel, setShowReel] = useState(false)
-  const W = 600, H = 200, PAD = { t: 18, r: 16, b: 40, l: 72 }
-  const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
+  const H = 200, PAD = { t: 10, r: 10, b: 10, l: 10 }
 
-  const [monthlyPts, setMonthlyPts] = useState<{ x: number; nominal: number; reel: number; nominalNoFX: number; label: string }[] | null>(null)
+  const [monthlyPts, setMonthlyPts] = useState<{ x: number; nominal: number; reel: number; nominalNoFX: number; cost: number; label: string }[] | null>(null)
+  const [anchorNominal, setAnchorNominal] = useState<number>(0)
+  const [anchorReel, setAnchorReel] = useState<number>(0)
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [hoverIdxPnl, setHoverIdxPnl] = useState<number | null>(null)
@@ -1061,6 +1155,28 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
     if (data.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
     const sorted = [...data].filter(p => p.quantite > 0).sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
     const today = new Date()
+    const pad2c = (n: number) => String(n).padStart(2, '0')
+    if (interval === '5min') {
+      const start = dateFrom ? new Date(dateFrom + 'T00:00:00') : new Date(); start.setHours(0,0,0,0)
+      const end = new Date(); const list: string[] = []
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 5*60*1000))
+        list.push(`${d.getFullYear()}-${pad2c(d.getMonth()+1)}-${pad2c(d.getDate())} ${pad2c(d.getHours())}:${pad2c(d.getMinutes())}:00`)
+      return { dates: list, firstDate: start, totalMs: (end.getTime() - start.getTime()) || 1 }
+    }
+    if (interval === '1h') {
+      const start = dateFrom ? new Date(dateFrom + 'T00:00:00') : (() => { const d = new Date(); d.setDate(d.getDate()-7); d.setHours(0,0,0,0); return d })()
+      const end = new Date(); const list: string[] = []
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 60*60*1000))
+        list.push(`${d.getFullYear()}-${pad2c(d.getMonth()+1)}-${pad2c(d.getDate())} ${pad2c(d.getHours())}:00:00`)
+      return { dates: list, firstDate: start, totalMs: (end.getTime() - start.getTime()) || 1 }
+    }
+    if (interval === '4h') {
+      const start = dateFrom ? new Date(dateFrom + 'T00:00:00') : (() => { const d = new Date(); d.setMonth(d.getMonth()-1); d.setHours(0,0,0,0); return d })()
+      const end = new Date(); const list: string[] = []
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 4*60*60*1000))
+        list.push(`${d.getFullYear()}-${pad2c(d.getMonth()+1)}-${pad2c(d.getDate())} ${pad2c(d.getHours())}:00:00`)
+      return { dates: list, firstDate: start, totalMs: (end.getTime() - start.getTime()) || 1 }
+    }
     if (range === '60d') {
       const list: string[] = []
       if (dateFrom && dateTo) {
@@ -1105,10 +1221,20 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
       dMonth++; if (dMonth > 11) { dMonth = 0; dYear++ }
     }
     return { dates: list, firstDate: startMonth, totalMs: (today.getTime() - startMonth.getTime()) || 1 }
-  }, [data, range])
+  }, [data, range, interval, dateFrom, dateTo])
 
-  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + (dateFrom ?? '') + '|' + (dateTo ?? '') + '|' + bustKey, [data, range, dateFrom, dateTo, bustKey])
+  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + (interval ?? '1day') + '|' + (dateFrom ?? '') + '|' + (dateTo ?? '') + '|' + bustKey + '|' + downsampleEvery, [data, range, interval, dateFrom, dateTo, bustKey, downsampleEvery])
   const _bustLastSeenPnL = useRef(0)
+  const [measuredW, setMeasuredW] = useState(0)
+  const chartProbeRef = useCallback((node: SVGSVGElement | null) => {
+    if (!node) return
+    const update = () => setMeasuredW(node.getBoundingClientRect().width)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(node)
+  }, [])
+  const W = measuredW > 0 ? measuredW : 600
+  const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
 
   useEffect(() => {
     if (data.length === 0 || dates.length === 0) return
@@ -1117,16 +1243,64 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
 
     async function fetchAll() {
       const today = new Date().toISOString().slice(0, 10)
-      const result: { x: number; nominal: number; reel: number; nominalNoFX: number; label: string }[] = []
+      const result: { x: number; nominal: number; reel: number; nominalNoFX: number; cost: number; label: string }[] = []
 
       // ─── Bulk history (évite N×M appels /api/prices) ──────────────────────
       const allTickers = [...new Set(data.map(p => p.ticker.toUpperCase()))]
       const fxPairs = [...new Set(data.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
       const isBust = bustKey > _bustLastSeenPnL.current; _bustLastSeenPnL.current = bustKey
-      const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust) as Record<string, { dates: string[]; closes: number[] }>
+      const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust, interval) as Record<string, { dates: string[]; closes: number[] }>
       const lookupClose = makeLookupClose(histJson)
-      // Pré-calcul unique : date la plus ancienne couverte par l'historique
-      const histStart = Object.values(histJson).map(h => h.dates[0]).filter(Boolean).sort()[0] ?? ''
+
+      // ─── Anchor : PnL une période avant dates[0] ──────────────────────────────
+      let anchorNomValue = 0, anchorReelValue = 0, anchorNomNoFXValue = 0
+      if (range !== 'all' && range !== 'weekly' && dates.length > 0) {
+        const pad2a = (n: number) => String(n).padStart(2, '0')
+        const anchorDateStr = (() => {
+          const s = dates[0]
+          if (interval === '5min') {
+            const d = new Date(s.replace(' ', 'T')); d.setMinutes(d.getMinutes() - 5)
+            return `${d.getFullYear()}-${pad2a(d.getMonth()+1)}-${pad2a(d.getDate())} ${pad2a(d.getHours())}:${pad2a(d.getMinutes())}:00`
+          } else if (interval === '1h') {
+            const d = new Date(s.replace(' ', 'T')); d.setHours(d.getHours() - 1)
+            return `${d.getFullYear()}-${pad2a(d.getMonth()+1)}-${pad2a(d.getDate())} ${pad2a(d.getHours())}:00:00`
+          } else if (interval === '4h') {
+            const d = new Date(s.replace(' ', 'T')); d.setHours(d.getHours() - 4)
+            return `${d.getFullYear()}-${pad2a(d.getMonth()+1)}-${pad2a(d.getDate())} ${pad2a(d.getHours())}:00:00`
+          } else {
+            const d = new Date(s); d.setDate(d.getDate() - 1)
+            return d.toISOString().slice(0, 10)
+          }
+        })()
+        const ancActivePosns = data.filter(p => p.dateAchat <= anchorDateStr)
+        if (ancActivePosns.length > 0) {
+          const ancPrices = await Promise.all(ancActivePosns.map(async p => {
+            const price = lookupClose(p.ticker, anchorDateStr)
+            const fxPair = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
+            const fxRate = fxPair ? (lookupClose(fxPair, anchorDateStr) ?? p.tauxActuelCHF) : 1
+            if (price !== null) return { price, fxRate }
+            const h = histJson[p.ticker.toUpperCase()]
+            const hFx = fxPair ? histJson[fxPair.toUpperCase()] : null
+            return { price: h?.closes[0] ?? p.prixAchat, fxRate: hFx?.closes[0] ?? p.tauxAchatCHF }
+          }))
+          let ancNom = 0, ancReel = 0, ancNomNoFX = 0
+          for (let j = 0; j < ancActivePosns.length; j++) {
+            const p = ancActivePosns[j]
+            const valCHF = p.quantite * ancPrices[j].price * ancPrices[j].fxRate
+            const valNoFX = p.quantite * ancPrices[j].price * p.tauxAchatCHF
+            if (p.quantite < 0 && p.prixVente != null) {
+              ancNom += valCHF + p.valeurCHF
+              ancNomNoFX += valNoFX + Math.abs(p.quantite) * p.prixVente * p.tauxAchatCHF
+              ancReel += valCHF + p.valeurCHF - p.coutCHF * inflationBetween(p.dateAchat, anchorDateStr)
+            } else {
+              ancNom += valCHF - p.coutCHF
+              ancNomNoFX += valNoFX - p.coutCHF
+              ancReel += valCHF - p.coutCHF * (1 + inflationBetween(p.dateAchat, anchorDateStr))
+            }
+          }
+          anchorNomValue = ancNom; anchorReelValue = ancReel; anchorNomNoFXValue = ancNomNoFX
+        }
+      }
 
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
@@ -1144,19 +1318,19 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
           const s = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
           return s <= today ? s : today
         })() : dateStr
-        const isToday = evalDateStr >= today
+        const isToday = (interval === '5min' || interval === '1h' || interval === '4h') ? false : evalDateStr >= today
         const activePosns = data.filter(p => p.dateAchat <= evalDateStr)
         if (activePosns.length === 0) {
           if ((range === 'all' || range === 'weekly') && result.length === 0) {
             const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
             const label = range === 'weekly' ? fmtDate(dateStr) : fmtMonth(dateStr)
-            result.push({ x: t, nominal: 0, reel: 0, nominalNoFX: 0, label })
+            result.push({ x: t, nominal: 0, reel: 0, nominalNoFX: 0, cost: 0, label })
+          } else if (interval === '1day' && result.length === 0 && i === 0) {
+            // YTD/1M/1Y : pas de positions à la date de départ → ancrer le premier point au niveau de référence
+            result.push({ x: 0, nominal: anchorNomValue, reel: anchorReelValue, nominalNoFX: anchorNomNoFXValue, cost: 0, label: fmtDay(dateStr) })
           }
           setProgress(Math.round((i + 1) / dates.length * 100)); continue
         }
-
-        // histStart computed once above the loop (not per iteration)
-        const useOldest = !isToday && evalDateStr < histStart
 
         const prices = await Promise.all(activePosns.map(async p => {
           if (!isToday) {
@@ -1166,23 +1340,20 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
               const fxRate = fxPair ? (lookupClose(fxPair, evalDateStr) ?? p.tauxActuelCHF) : 1
               return { price, fxRate }
             }
-            // Date is before history window: use oldest history price (avoids rate-limiting Yahoo)
-            if (useOldest) {
-              const h = histJson[p.ticker.toUpperCase()]
-              const fxKey = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
-              const hFx = fxKey ? histJson[fxKey.toUpperCase()] : null
-              const price0 = h?.closes[0] ?? p.prixAchat
-              const fxRate0 = hFx?.closes[0] ?? p.tauxAchatCHF
-              return { price: price0, fxRate: fxRate0 }
-            }
+            // Pas de prix dans l'hist pour cette date → oldest known (évite tout appel API supplémentaire)
+            const h = histJson[p.ticker.toUpperCase()]
+            const fxKey = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
+            const hFx = fxKey ? histJson[fxKey.toUpperCase()] : null
+            return { price: h?.closes[0] ?? p.prixAchat, fxRate: hFx?.closes[0] ?? p.tauxAchatCHF }
           }
-          const d = await fetchPriceCached(p.ticker, p.devise, isToday ? undefined : evalDateStr)
+          const d = await fetchPriceCached(p.ticker, p.devise, undefined)
           return d ?? { price: p.prixActuel, fxRate: p.tauxActuelCHF }
         }))
 
-        let nominal = 0, reel = 0, nominalNoFX = 0
+        let nominal = 0, reel = 0, nominalNoFX = 0, cost = 0
         for (let j = 0; j < activePosns.length; j++) {
           const p = activePosns[j]
+          cost += Math.abs(p.coutCHF)
           if (p.quantite < 0 && p.prixVente != null) {
             // Lot de vente clôturé :
             //   qty(négatif) × price(t) × fx  → retire les unités vendues du lot long
@@ -1204,16 +1375,56 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
         }
 
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
-        const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
-        result.push({ x: isToday ? 1 : t, nominal, reel, nominalNoFX, label })
+        const label = (interval === '5min') ? fmtTime(dateStr) : (interval === '1h' || interval === '4h') ? fmtHourDay(dateStr) : range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
+        result.push({ x: isToday ? 1 : t, nominal, reel, nominalNoFX, cost, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
+      }
+      // ─── Point temps réel (valeur actuelle précise via fetchPriceCached) ──────────
+      if (!cancelled) {
+        const nowActivePosns = data.filter(p => p.dateAchat <= today)
+        if (nowActivePosns.length > 0) {
+          const nowPrices = await Promise.all(nowActivePosns.map(async p => {
+            const d = await fetchPriceCached(p.ticker, p.devise, undefined)
+            return d ?? { price: p.prixActuel, fxRate: p.tauxActuelCHF }
+          }))
+          let nowNominal = 0, nowReel = 0, nowNominalNoFX = 0, nowCost = 0
+          for (let jj = 0; jj < nowActivePosns.length; jj++) {
+            const pp = nowActivePosns[jj]
+            nowCost += Math.abs(pp.coutCHF)
+            if (pp.quantite < 0 && pp.prixVente != null) {
+              const valCHF   = pp.quantite * nowPrices[jj].price * nowPrices[jj].fxRate
+              const valNoFX  = pp.quantite * nowPrices[jj].price * pp.tauxAchatCHF
+              nowNominal    += valCHF + pp.valeurCHF
+              nowNominalNoFX += valNoFX + Math.abs(pp.quantite) * pp.prixVente * pp.tauxAchatCHF
+              nowReel       += valCHF + pp.valeurCHF - pp.coutCHF * inflationBetween(pp.dateAchat, today)
+            } else {
+              const valCHF  = pp.quantite * nowPrices[jj].price * nowPrices[jj].fxRate
+              const valNoFX = pp.quantite * nowPrices[jj].price * pp.tauxAchatCHF
+              nowNominal    += valCHF - pp.coutCHF
+              nowNominalNoFX += valNoFX - pp.coutCHF
+              nowReel       += valCHF - pp.coutCHF * (1 + inflationBetween(pp.dateAchat, today))
+            }
+          }
+          result.push({ x: 1, nominal: nowNominal, reel: nowReel, nominalNoFX: nowNominalNoFX, cost: nowCost, label: 'Maintenant' })
+        }
       }
       // Normaliser le premier point à 0 pour les modes mensuel et hebdomadaire
       if ((range === 'all' || range === 'weekly') && result.length > 0) {
         const off = { nominal: result[0].nominal, reel: result[0].reel, nominalNoFX: result[0].nominalNoFX }
         for (const pt of result) { pt.nominal -= off.nominal; pt.reel -= off.reel; pt.nominalNoFX -= off.nominalNoFX }
       }
-      if (!cancelled) { setMonthlyPts(result); setLoading(false) }
+      // YTD/1M/1Y : ancrer la courbe au bord gauche avec la première vraie valeur
+      if (interval === '1day' && dateFrom && result.length > 0 && result[0].x > 0.001) {
+        result[0].x = 0
+      }
+      const filtered1h = result.length > 1
+        ? result.filter((pt, i) => i === 0 || Math.abs(pt.nominal - result[i - 1].nominal) > 0.001)
+        : result
+      const finalResult = filtered1h.length > 1
+        ? filtered1h.map((pt, i) => ({ ...pt, x: i / (filtered1h.length - 1) }))
+        : filtered1h
+      const sampledResult = downsampleEvery > 1 ? finalResult.filter((_, i) => i % downsampleEvery === 0 || i === finalResult.length - 1) : finalResult
+      if (!cancelled) { setMonthlyPts(sampledResult); setAnchorNominal(anchorNomValue); setAnchorReel(anchorReelValue); setLoading(false) }
     }
     fetchAll()
     return () => { cancelled = true }
@@ -1225,7 +1436,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
   if (loading) return (
     <div className="flex flex-col items-center justify-center h-36 gap-2">
       <div className="w-48 h-1.5 bg-[#DDD9D1] dark:bg-[#2a3f52] rounded-full overflow-hidden">
-        <div className="h-full bg-[#2B6B5A] rounded-full transition-all" style={{ width: `${progress}%` }} />
+        <div className="h-full bg-[#14B8A6] rounded-full transition-all" style={{ width: `${progress}%` }} />
       </div>
       <p className="text-xs text-[#9E9A93]">{range === '60d' ? 'Chargement 60 jours…' : range === 'weekly' ? 'Chargement des données hebdomadaires…' : 'Chargement des données mensuelles…'} {progress}%</p>
     </div>
@@ -1249,8 +1460,8 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
     return arr
   })
   const allValsFallbackVis = allValsVis.length ? allValsVis : scalePtsP.flatMap(p => [p.nominal])
-  const _maxRawVis = isZoomedPnl ? Math.max(...allValsFallbackVis) : Math.max(...allValsFallbackVis, 0)
-  const _minRawVis = isZoomedPnl ? Math.min(...allValsFallbackVis) : Math.min(...allValsFallbackVis, 0)
+  const _maxRawVis = Math.max(...allValsFallbackVis)
+  const _minRawVis = Math.min(...allValsFallbackVis)
   const rawSpanPnlVis = (_maxRawVis - _minRawVis) || Math.abs(_maxRawVis) * 0.1 || 1
   const rawStepPnlVis = rawSpanPnlVis / 4
   const magPnlVis = Math.pow(10, Math.floor(Math.log10(rawStepPnlVis)))
@@ -1264,21 +1475,79 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
   const tickVals = Array.from({ length: Math.round((maxVVis - minVVis) / niceStepVis) + 1 }, (_, i) => minVVis + i * niceStepVis)
   const zeroY = py(0)
 
-  const nomAreas = showNominal ? buildColoredAreas(points.map(p => ({ x: p.x, val: p.nominal, base: 0 })), px, py) : { gainD: '', lossD: '' }
+  const nomAreas = showNominal ? buildColoredAreas(points.map(p => ({ x: p.x, val: p.nominal, base: anchorNominal })), px, py) : { gainD: '', lossD: '' }
   const reelAreas = showReel ? buildColoredAreas(points.map(p => ({ x: p.x, val: p.reel, base: 0 })), px, py) : { gainD: '', lossD: '' }
   const lastVisP = visPtsP[visPtsP.length - 1] ?? points[points.length - 1]
 
+  const _pnlDisp = hoverIdxPnl !== null ? points[hoverIdxPnl] : points[points.length - 1]
+
   return (
     <>
+    {/* ── Stat header + toggle buttons ── */}
+    <div className="flex items-start justify-between mb-3 px-5">
+      <div className="min-h-[52px]">
+        {_pnlDisp ? (
+          <>
+            <div className="flex items-baseline gap-2 flex-wrap">
+              {showNominal && (
+                <span className={`text-2xl font-bold tabular-nums ${_pnlDisp.nominal >= anchorNominal ? 'text-[#14B8A6]' : 'text-[#EF4444]'}`}>
+                  {(_pnlDisp.nominal - anchorNominal) >= 0 ? '+' : ''}{(_pnlDisp.nominal - anchorNominal).toFixed(2)} CHF
+                </span>
+              )}
+              {showReel && !showNominal && (
+                <span className={`text-2xl font-bold tabular-nums text-[#1B5C80]`}>
+                  {(_pnlDisp.reel - anchorReel) >= 0 ? '+' : ''}{(_pnlDisp.reel - anchorReel).toFixed(2)} CHF
+                </span>
+              )}
+              {showReel && !showNominal && _pnlDisp.cost > 0 && (
+                <span className={`text-sm font-semibold tabular-nums text-[#1B5C80]`}>
+                  ({(_pnlDisp.reel - anchorReel) >= 0 ? '+' : ''}{((_pnlDisp.reel - anchorReel) / _pnlDisp.cost * 100).toFixed(2)}%)
+                </span>
+              )}
+              {showNominal && _pnlDisp.cost > 0 && (
+                <span className={`text-sm font-semibold tabular-nums ${_pnlDisp.nominal >= anchorNominal ? 'text-[#14B8A6]' : 'text-[#EF4444]'}`}>
+                  ({(_pnlDisp.nominal - anchorNominal) >= 0 ? '+' : ''}{((_pnlDisp.nominal - anchorNominal) / _pnlDisp.cost * 100).toFixed(2)}%)
+                </span>
+              )}
+              {showNominal && showReel && (
+                <span className={`text-sm font-semibold tabular-nums text-[#1B5C80]`}>
+                  Réel {(_pnlDisp.reel - anchorReel) >= 0 ? '+' : ''}{(_pnlDisp.reel - anchorReel).toFixed(2)} CHF
+                  {_pnlDisp.cost > 0 && <> ({(_pnlDisp.reel - anchorReel) >= 0 ? '+' : ''}{((_pnlDisp.reel - anchorReel) / _pnlDisp.cost * 100).toFixed(2)}%)</>}
+                </span>
+              )}
+            </div>
+          </>
+        ) : null}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+        <button type="button" onClick={() => setShowNominal(v => !v)}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-all ${showNominal ? 'border-[#14B8A6] bg-[#F5F3EF] dark:bg-[#1E2530]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-40'}`}>
+          <svg width="20" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="#14B8A6" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#EF4444" strokeWidth="2" /></svg>
+          <span className="text-[#9E9A93]">Nominal</span>
+        </button>
+        <button type="button" onClick={() => setShowReel(v => !v)}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-all ${showReel ? 'border-[#1B5C80] bg-[#F5F3EF] dark:bg-[#1E2530]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-40'}`}>
+          <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="5 3" /></svg>
+          <span className="text-[#9E9A93]">Réel</span>
+        </button>
+        <span className="relative inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-[#EDEAE4] dark:bg-[#323B4A] text-[#9E9A93] text-[9px] font-bold cursor-help group/tipPnl">
+          ?
+          <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 px-2 py-1 bg-[#1B3050] dark:bg-[#253040] text-white text-[10px] rounded opacity-0 group-hover/tipPnl:opacity-100 transition-opacity z-50 leading-relaxed">
+            <span className="block whitespace-nowrap"><span className="font-semibold text-[#14B8A6]">Nominal</span> — gain/perte brut (prix actuel − coût d&apos;achat)</span>
+            <span className="block whitespace-nowrap"><span className="font-semibold text-[#1B5C80]">Réel</span> — gain/perte ajusté de l&apos;inflation depuis la date d&apos;achat</span>
+          </span>
+        </span>
+      </div>
+    </div>
     {isZoomedPnl && (
-      <div className="flex justify-end mb-1">
+      <div className="flex justify-end mb-1 px-5">
         <button type="button" onClick={() => setZoomWPnl([0, 1])}
-          className="text-xs text-[#9E9A93] hover:text-[#2B6B5A] px-2 py-0.5 rounded border border-[#DDD9D1] dark:border-[#2a3f52]">
+          className="text-xs text-[#9E9A93] hover:text-[#14B8A6] px-2 py-0.5 rounded border border-[#DDD9D1] dark:border-[#323B4A]">
           ↺ Réinitialiser zoom
         </button>
       </div>
     )}
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H, cursor: isZoomedPnl ? 'grab' : 'default' }}
+    <svg ref={chartProbeRef} viewBox={`0 0 ${W} ${H}`} style={{ display: 'block', width: '100%', height: H, cursor: isZoomedPnl ? 'grab' : 'default' }}
       onMouseLeave={() => { setHoverIdxPnl(null); setHoverMxPnl(null); zoomDragPnl.current = null }}
       onMouseDown={e => {
         if (!isZoomedPnl) return
@@ -1304,7 +1573,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
           const d = Math.abs(p.x - t); if (d < bd) { bd = d; best = i }
         })
         if (best < 0) return
-        setHoverIdxPnl(best); setHoverMxPnl(Math.max(px(firstVisP.x), Math.min(mx, px(lastVisP.x))))
+        setHoverIdxPnl(best); setHoverMxPnl(px(points[best].x))
       }}
       onWheel={e => {
         e.preventDefault()
@@ -1319,147 +1588,137 @@ const PnLChart = React.memo(function PnLChart({ data, range, dateFrom, dateTo, b
       <defs>
         <clipPath id="pnl-clip"><rect x={PAD.l} y={PAD.t} width={iW} height={iH} /></clipPath>
         <linearGradient id="pnl-ng" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#2B6B5A" stopOpacity="0.22" />
-          <stop offset="100%" stopColor="#2B6B5A" stopOpacity="0.02" />
+          <stop offset="0%" stopColor="#14B8A6" stopOpacity="0.22" />
+          <stop offset="100%" stopColor="#14B8A6" stopOpacity="0.02" />
         </linearGradient>
         <linearGradient id="pnl-nl" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#DC2626" stopOpacity="0.02" />
-          <stop offset="100%" stopColor="#DC2626" stopOpacity="0.20" />
+          <stop offset="0%" stopColor="#EF4444" stopOpacity="0.02" />
+          <stop offset="100%" stopColor="#EF4444" stopOpacity="0.20" />
         </linearGradient>
         <linearGradient id="pnl-rg" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#1B5C80" stopOpacity="0.16" />
           <stop offset="100%" stopColor="#1B5C80" stopOpacity="0.02" />
         </linearGradient>
         <linearGradient id="pnl-rl" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#DC2626" stopOpacity="0.02" />
-          <stop offset="100%" stopColor="#DC2626" stopOpacity="0.14" />
+          <stop offset="0%" stopColor="#EF4444" stopOpacity="0.02" />
+          <stop offset="100%" stopColor="#EF4444" stopOpacity="0.14" />
         </linearGradient>
       </defs>
-      {tickVals.map((v, i) => (
-        <g key={i}>
-          <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)} stroke="#E2DDD6" strokeWidth="0.4" strokeDasharray="4 4" />
-          <text x={PAD.l - 6} y={py(v) + 4} textAnchor="end" fontSize="10" fill="#9E9A93">
-            {(() => {
-              const kDec = niceStepVis >= 1000 ? 0 : niceStepVis >= 100 ? 1 : 2
-              const dec  = niceStepVis < 1 ? 1 : 0
-              const sign = v > 0 ? '+' : ''
-              return Math.abs(v) >= 1000
-                ? `${sign}${(v / 1000).toFixed(kDec)}k`
-                : `${sign}${v.toFixed(dec)}`
-            })()}
-          </text>
-        </g>
-      ))}
       <g clipPath="url(#pnl-clip)">
-      {zeroY >= PAD.t && zeroY <= PAD.t + iH && (
+      {zeroY >= PAD.t && zeroY <= PAD.t + iH && Math.abs(zeroY - py(anchorNominal)) > 3 && (
         <line x1={PAD.l} y1={zeroY} x2={W - PAD.r} y2={zeroY} stroke="#6B7280" strokeWidth="1.5" opacity="0.7" />
       )}
+      {(() => { const ancY = py(anchorNominal); return ancY >= PAD.t && ancY <= PAD.t + iH ? (
+        <line x1={PAD.l} y1={ancY} x2={W - PAD.r} y2={ancY} stroke="var(--finv-cost-line)" strokeWidth="1" strokeDasharray="6 3" />
+      ) : null })()}
       {showReel && (
         <>
-          {reelAreas.gainD && <path d={reelAreas.gainD} fill="url(#pnl-rg)" />}
-          {reelAreas.lossD && <path d={reelAreas.lossD} fill="url(#pnl-rl)" />}
-          {points.slice(0, -1).map((p0, i) => {
-            const p1 = points[i + 1]
-            const d0 = p0.reel, d1 = p1.reel
-            if (d0 >= 0 && d1 >= 0) return <line key={i} x1={px(p0.x)} y1={py(d0)} x2={px(p1.x)} y2={py(d1)} stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round" />
-            if (d0 <= 0 && d1 <= 0) return <line key={i} x1={px(p0.x)} y1={py(d0)} x2={px(p1.x)} y2={py(d1)} stroke="#DC2626" strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round" />
-            const t = d0 / (d0 - d1)
-            const cx = px(p0.x) + t * (px(p1.x) - px(p0.x))
-            const cy = py(d0) + t * (py(d1) - py(d0))
-            return <g key={i}>
-              <line x1={px(p0.x)} y1={py(d0)} x2={cx} y2={cy} stroke={d0 > 0 ? '#1B5C80' : '#DC2626'} strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round" />
-              <line x1={cx} y1={cy} x2={px(p1.x)} y2={py(d1)} stroke={d0 > 0 ? '#DC2626' : '#1B5C80'} strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round" />
-            </g>
-          })}
-          <circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="3.5" fill={points[points.length-1].reel >= 0 ? '#1B5C80' : '#DC2626'} />
+
+          {(() => {
+            const R = 4
+            const rndPath = (pts: [number,number][]) => {
+              if (pts.length < 2) return ''
+              if (pts.length === 2) return `M${pts[0][0]},${pts[0][1]} L${pts[1][0]},${pts[1][1]}`
+              let d = `M${pts[0][0]},${pts[0][1]}`
+              for (let i = 1; i < pts.length - 1; i++) {
+                const [ax,ay]=pts[i-1],[bx,by]=pts[i],[cx2,cy2]=pts[i+1]
+                const d1=Math.sqrt((bx-ax)**2+(by-ay)**2), d2=Math.sqrt((cx2-bx)**2+(cy2-by)**2)
+                const r=Math.min(R,d1/2,d2/2)
+                d+=` L${bx-r*(bx-ax)/d1},${by-r*(by-ay)/d1} Q${bx},${by} ${bx+r*(cx2-bx)/d2},${by+r*(cy2-by)/d2}`
+              }
+              return d+` L${pts[pts.length-1][0]},${pts[pts.length-1][1]}`
+            }
+            const runs: { color: string; pts: [number,number][] }[] = []
+            let curColor = '', curPts: [number,number][] = []
+            const flush = () => { if (curPts.length > 1) runs.push({ color: curColor, pts: [...curPts] }); curPts = [] }
+            const addSeg = (x1: number, y1: number, x2: number, y2: number, col: string) => {
+              if (col !== curColor) { flush(); curColor = col; curPts = [[x1,y1],[x2,y2]] }
+              else { if (curPts.length === 0) curPts = [[x1,y1]]; curPts.push([x2,y2]) }
+            }
+            points.slice(0, -1).forEach((p0, i) => {
+              const p1 = points[i + 1]
+              addSeg(px(p0.x), py(p0.reel), px(p1.x), py(p1.reel), '#1B5C80')
+            })
+            flush()
+            return runs.map((r, i) => <path key={i} d={rndPath(r.pts)} fill="none" stroke={r.color} strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round" />)
+          })()}
+          <circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="3.5" fill='#1B5C80' />
         </>
       )}
       {showNominal && (
         <>
-          {nomAreas.gainD && <path d={nomAreas.gainD} fill="url(#pnl-ng)" />}
-          {nomAreas.lossD && <path d={nomAreas.lossD} fill="url(#pnl-nl)" />}
-          {points.slice(0, -1).map((p0, i) => {
-            const p1 = points[i + 1]
-            const d0 = p0.nominal, d1 = p1.nominal
-            if (d0 >= 0 && d1 >= 0) return <line key={i} x1={px(p0.x)} y1={py(d0)} x2={px(p1.x)} y2={py(d1)} stroke="#2B6B5A" strokeWidth="2.5" strokeLinecap="round" />
-            if (d0 <= 0 && d1 <= 0) return <line key={i} x1={px(p0.x)} y1={py(d0)} x2={px(p1.x)} y2={py(d1)} stroke="#DC2626" strokeWidth="2.5" strokeLinecap="round" />
-            const t = d0 / (d0 - d1)
-            const cx = px(p0.x) + t * (px(p1.x) - px(p0.x))
-            const cy = py(d0) + t * (py(d1) - py(d0))
-            return <g key={i}>
-              <line x1={px(p0.x)} y1={py(d0)} x2={cx} y2={cy} stroke={d0 > 0 ? '#2B6B5A' : '#DC2626'} strokeWidth="2.5" strokeLinecap="round" />
-              <line x1={cx} y1={cy} x2={px(p1.x)} y2={py(d1)} stroke={d0 > 0 ? '#DC2626' : '#2B6B5A'} strokeWidth="2.5" strokeLinecap="round" />
-            </g>
-          })}
-          <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="7" fill="none" stroke={points[points.length-1].nominal >= 0 ? '#2B6B5A' : '#DC2626'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="4" fill={points[points.length-1].nominal >= 0 ? '#2B6B5A' : '#DC2626'} /></>
+
+          {(() => {
+            const R = 4
+            const rndPath = (pts: [number,number][]) => {
+              if (pts.length < 2) return ''
+              if (pts.length === 2) return `M${pts[0][0]},${pts[0][1]} L${pts[1][0]},${pts[1][1]}`
+              let d = `M${pts[0][0]},${pts[0][1]}`
+              for (let i = 1; i < pts.length - 1; i++) {
+                const [ax,ay]=pts[i-1],[bx,by]=pts[i],[cx2,cy2]=pts[i+1]
+                const d1=Math.sqrt((bx-ax)**2+(by-ay)**2), d2=Math.sqrt((cx2-bx)**2+(cy2-by)**2)
+                const r=Math.min(R,d1/2,d2/2)
+                d+=` L${bx-r*(bx-ax)/d1},${by-r*(by-ay)/d1} Q${bx},${by} ${bx+r*(cx2-bx)/d2},${by+r*(cy2-by)/d2}`
+              }
+              return d+` L${pts[pts.length-1][0]},${pts[pts.length-1][1]}`
+            }
+            const runs: { color: string; pts: [number,number][] }[] = []
+            let curColor = '', curPts: [number,number][] = []
+            const flush = () => { if (curPts.length > 1) runs.push({ color: curColor, pts: [...curPts] }); curPts = [] }
+            const addSeg = (x1: number, y1: number, x2: number, y2: number, col: string) => {
+              if (col !== curColor) { flush(); curColor = col; curPts = [[x1,y1],[x2,y2]] }
+              else { if (curPts.length === 0) curPts = [[x1,y1]]; curPts.push([x2,y2]) }
+            }
+            points.slice(0, -1).forEach((p0, i) => {
+              const p1 = points[i + 1]
+              const d0 = p0.nominal, d1 = p1.nominal
+              const r0 = d0 - anchorNominal, r1 = d1 - anchorNominal
+              if (r0 >= 0 && r1 >= 0) { addSeg(px(p0.x), py(d0), px(p1.x), py(d1), '#14B8A6') }
+              else if (r0 <= 0 && r1 <= 0) { addSeg(px(p0.x), py(d0), px(p1.x), py(d1), '#EF4444') }
+              else {
+                const t = r0 / (r0 - r1)
+                const cx = px(p0.x) + t * (px(p1.x) - px(p0.x))
+                const cy = py(d0) + t * (py(d1) - py(d0))
+                addSeg(px(p0.x), py(d0), cx, cy, r0 > 0 ? '#14B8A6' : '#EF4444')
+                addSeg(cx, cy, px(p1.x), py(d1), r0 > 0 ? '#EF4444' : '#14B8A6')
+              }
+            })
+            flush()
+            return runs.map((r, i) => <path key={i} d={rndPath(r.pts)} fill="none" stroke={r.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />)
+          })()}
         </>
       )}
 
       </g>
-      {(() => {
-        const _vp = visPtsP; const _n = _vp.length
-        const _maxL = Math.max(2, Math.min(5, Math.floor(iW / 88)))
-        const _step = Math.max(1, Math.ceil(_n / _maxL))
-        const _idxs: number[] = [0]
-        for (let _i = _step; _i < _n - 1; _i += _step) _idxs.push(_i)
-        _idxs.push(_n - 1)
-        if (_idxs.length > 1 && (_vp[_n - 1].x - _vp[_idxs[_idxs.length - 2]].x) * iW < 44) _idxs.splice(_idxs.length - 2, 1)
-        return _idxs.map(idx => {
-          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]; const isFst = idx === 0
-          const _x = isFst || isLst ? px(p.x) : Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))
-          return <text key={idx} x={_x} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
-        })
-      })()}
+      <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="7" fill="none" stroke={points[points.length-1].nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="4" fill={points[points.length-1].nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} /></>
       {hoverIdxPnl !== null && (() => {
         const hov = points[hoverIdxPnl]
-        const lines: {label: string; val: number; col: string}[] = []
-        if (showNominal) lines.push({ label: 'Nominal', val: hov.nominal, col: hov.nominal >= 0 ? '#4ADE80' : '#F87171' })
-        if (showReel) lines.push({ label: 'Réel', val: hov.reel, col: hov.reel >= 0 ? '#6BB8E0' : '#F87171' })
-        const bh = 20 + lines.length * 16
-        const tx = Math.min(Math.max(px(hov.x), PAD.l + 69), W - PAD.r - 69)
+        const mx = hoverMxPnl ?? px(hov.x)
         const refV = showNominal ? hov.nominal : showReel ? hov.reel : 0
-        const ty = Math.max(PAD.t + bh + 4, py(refV) - 10)
+        const lx = Math.min(Math.max(mx, PAD.l + 22), W - PAD.r - 22)
+        const labelAbove = py(refV) < PAD.t + 28
+        const ly = labelAbove ? py(refV) + 20 : py(refV) - 28
         return (
           <g>
-            <line x1={hoverMxPnl ?? px(hov.x)} y1={PAD.t} x2={hoverMxPnl ?? px(hov.x)} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
-            {showNominal && <circle cx={px(hov.x)} cy={py(hov.nominal)} r="3.5" fill={hov.nominal >= 0 ? '#2B6B5A' : '#DC2626'} />}
-            {showReel && <circle cx={px(hov.x)} cy={py(hov.reel)} r="3" fill={hov.reel >= 0 ? '#1B5C80' : '#DC2626'} />}
-            <g transform={`translate(${tx},${ty})`}>
-              <rect x="-69" y={-bh} width="138" height={bh + 6} rx="5" fill="#1A2920" stroke="#2D4A38" strokeWidth="0.6" opacity="0.96" />
-              <text x="0" y={-(bh - 13)} textAnchor="middle" fontSize="10" fontWeight="500" fill="#B8B3AB">{hov.label}</text>
-              {lines.map((l, i) => (
-                <g key={i}>
-                  <text x="-6" y={-(bh - 13) + 15 + i * 16} textAnchor="end" fontSize="10" fill="#7A766F">{l.label}</text>
-                  <text x="6" y={-(bh - 13) + 15 + i * 16} textAnchor="start" fontSize="11" fontWeight="600" fill={l.col}>{l.val >= 0 ? '+' : ''}{Math.abs(l.val) >= 1000 ? `${(l.val/1000).toFixed(1)}k` : l.val.toFixed(0)} CHF</text>
-                </g>
-              ))}
+            <line x1={mx} y1={PAD.t} x2={mx} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
+            {showNominal && <circle cx={px(hov.x)} cy={py(hov.nominal)} r="4" fill={hov.nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} />}
+            <g transform={`translate(${lx},${ly})`}>
+              <rect x="-22" y="-9" width="44" height="18" rx="4" fill="#0f1f18" stroke="#2D4A38" strokeWidth="0.6" opacity="0.92" />
+              <text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="500" fill="#B8B3AB">{hov.label}</text>
             </g>
           </g>
         )
       })()}
     </svg>
-    <div className="flex items-center gap-2 mt-2 flex-wrap">
-      <button type="button" onClick={() => setShowNominal(v => !v)}
-        className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs transition-all ${showNominal ? 'border-[#2B6B5A] bg-[#F5F3EF] dark:bg-[#1B2D3E]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-40'}`}>
-        <svg width="20" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="#2B6B5A" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#DC2626" strokeWidth="2" /></svg>
-        <span className="text-[#9E9A93]">Nominal</span>
-      </button>
-      <button type="button" onClick={() => setShowReel(v => !v)}
-        className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs transition-all ${showReel ? 'border-[#1B5C80] bg-[#F5F3EF] dark:bg-[#1B2D3E]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-40'}`}>
-        <svg width="20" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="5 3" /><line x1="10" y1="5" x2="20" y2="5" stroke="#DC2626" strokeWidth="1.5" strokeDasharray="5 3" /></svg>
-        <span className="text-[#9E9A93]">Réel</span>
-      </button>
 
-    </div>
     </>
   )
 })
 
 
 // ─── Chart: Drawdown ─────────────────────────────────────────────────────────
-const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, range, dateFrom, dateTo, bustKey = 0 }: { data: PositionCalc[]; onMaxDrawdown?: (pct: number, date: string) => void; range?: 'all' | '60d' | 'weekly'; dateFrom?: string; dateTo?: string; bustKey?: number }) {
-  const W = 600, H = 195, PAD = { t: 16, r: 16, b: 40, l: 64 }
-  const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
+const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, range, interval = '1day', dateFrom, dateTo, bustKey = 0, downsampleEvery = 1 }: { data: PositionCalc[]; onMaxDrawdown?: (pct: number, date: string) => void; range?: 'all' | '60d' | 'weekly'; interval?: '1day' | '1h' | '4h' | '5min'; dateFrom?: string; dateTo?: string; bustKey?: number; downsampleEvery?: number }) {
+  const H = 195, PAD = { t: 10, r: 10, b: 10, l: 10 }
 
   const [ddPts, setDdPts] = useState<{ x: number; dd: number; label: string }[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -1473,6 +1732,28 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
     if (data.length === 0) return { dates: [] as string[], firstDate: new Date(), totalMs: 1 }
     const sorted = [...data].filter(p => p.quantite > 0).sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
     const today = new Date()
+    const pad2b = (n: number) => String(n).padStart(2, '0')
+    if (interval === '5min') {
+      const start = dateFrom ? new Date(dateFrom + 'T00:00:00') : new Date(); start.setHours(0,0,0,0)
+      const end = new Date(); const list: string[] = []
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 5*60*1000))
+        list.push(`${d.getFullYear()}-${pad2b(d.getMonth()+1)}-${pad2b(d.getDate())} ${pad2b(d.getHours())}:${pad2b(d.getMinutes())}:00`)
+      return { dates: list, firstDate: start, totalMs: (end.getTime() - start.getTime()) || 1 }
+    }
+    if (interval === '1h') {
+      const start = dateFrom ? new Date(dateFrom + 'T00:00:00') : (() => { const d = new Date(); d.setDate(d.getDate()-7); d.setHours(0,0,0,0); return d })()
+      const end = new Date(); const list: string[] = []
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 60*60*1000))
+        list.push(`${d.getFullYear()}-${pad2b(d.getMonth()+1)}-${pad2b(d.getDate())} ${pad2b(d.getHours())}:00:00`)
+      return { dates: list, firstDate: start, totalMs: (end.getTime() - start.getTime()) || 1 }
+    }
+    if (interval === '4h') {
+      const start = dateFrom ? new Date(dateFrom + 'T00:00:00') : (() => { const d = new Date(); d.setMonth(d.getMonth()-1); d.setHours(0,0,0,0); return d })()
+      const end = new Date(); const list: string[] = []
+      for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 4*60*60*1000))
+        list.push(`${d.getFullYear()}-${pad2b(d.getMonth()+1)}-${pad2b(d.getDate())} ${pad2b(d.getHours())}:00:00`)
+      return { dates: list, firstDate: start, totalMs: (end.getTime() - start.getTime()) || 1 }
+    }
     if (range === '60d') {
       const list: string[] = []
       if (dateFrom && dateTo) {
@@ -1512,10 +1793,20 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
       dMonth++; if (dMonth > 11) { dMonth = 0; dYear++ }
     }
     return { dates: list, firstDate: new Date(first.getFullYear(), first.getMonth(), 1), totalMs: ms || 1 }
-  }, [data, range, dateFrom, dateTo])
+  }, [data, range, interval, dateFrom, dateTo])
 
-  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + (dateFrom ?? '') + '|' + (dateTo ?? '') + '|' + bustKey, [data, range, dateFrom, dateTo, bustKey])
+  const dataKey = useMemo(() => data.map(p => p.ticker + p.dateAchat + p.quantite).join(',') + '|' + (range ?? 'all') + '|' + (interval ?? '1day') + '|' + (dateFrom ?? '') + '|' + (dateTo ?? '') + '|' + bustKey + '|' + downsampleEvery, [data, range, interval, dateFrom, dateTo, bustKey, downsampleEvery])
   const _bustLastSeenDD = useRef(0)
+  const [measuredW, setMeasuredW] = useState(0)
+  const chartProbeRef = useCallback((node: SVGSVGElement | null) => {
+    if (!node) return
+    const update = () => setMeasuredW(node.getBoundingClientRect().width)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(node)
+  }, [])
+  const W = measuredW > 0 ? measuredW : 600
+  const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b
 
   useEffect(() => {
     if (data.length === 0 || dates.length === 0) return
@@ -1529,7 +1820,7 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
       const allTickers = [...new Set(longLots.map(p => p.ticker.toUpperCase()))]
       const fxPairs = [...new Set(longLots.filter(p => p.devise !== 'CHF').map(p => `${p.devise}CHF=X`))]
       const isBust = bustKey > _bustLastSeenDD.current; _bustLastSeenDD.current = bustKey
-      const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust) as Record<string, { dates: string[]; closes: number[] }>
+      const histJson = await fetchHistory([...allTickers, ...fxPairs].join(','), isBust, interval) as Record<string, { dates: string[]; closes: number[] }>
       const lookupClose = makeLookupClose(histJson)
 
       // ─── Événements de flux de capital (triés par date) ──────────────────
@@ -1700,6 +1991,9 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
           }
         }
       }
+      // Réinitialiser le pic VLU après le préchauffage : le drawdown démarre à 0
+      // au premier point affiché (relatif à la plage sélectionnée, pas à l'historique)
+      peakUnitV = -Infinity
 
       for (let i = 0; i < dates.length; i++) {
         if (cancelled) return
@@ -1715,7 +2009,7 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
           const s = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
           return s <= today ? s : today
         })() : dateStr
-        const isToday = evalDateStr >= today
+        const isToday = (interval === '5min' || interval === '1h' || interval === '4h') ? false : evalDateStr >= today
 
         // Long lots actifs à cette date (achetés et pas encore vendus)
         const activeLong = longLots.filter(p =>
@@ -1797,15 +2091,76 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
         if (unitV > peakUnitV) peakUnitV = unitV
 
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
-        const label = range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
+        const label = (interval === '5min') ? fmtTime(dateStr) : (interval === '1h' || interval === '4h') ? fmtHourDay(dateStr) : range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
         const dd = peakUnitV > 0 ? ((unitV - peakUnitV) / peakUnitV) * 100 : 0
         result.push({ x: isToday ? 1 : t, dd, label })
       }
 
       if (cancelled) return
-      const maxDDPt = result.reduce((m, p) => p.dd < m.dd ? p : m, result[0])
+      // YTD/1M/1Y : ancrer la courbe au bord gauche avec la première vraie valeur
+      if (interval === '1day' && dateFrom && result.length > 0 && result[0].x > 0.001) {
+        result[0].x = 0
+      }
+      // ─── Point temps réel (valeur actuelle précise via fetchPriceCached) ──────────
+      if (!cancelled && totalUnits > 0) {
+        const nowActiveLong = longLots.filter(p => p.dateAchat <= today && (!p.dateVente || p.dateVente > today))
+        if (nowActiveLong.length > 0) {
+          const nowUniqueTickers = [...new Set(nowActiveLong.map(p => p.ticker.toUpperCase()))]
+          const nowPriceMap = new Map<string, { price: number; fxRate: number }>()
+          await Promise.all(nowUniqueTickers.map(async tk => {
+            const lot = nowActiveLong.find(p => p.ticker.toUpperCase() === tk)!
+            const d = await fetchPriceCached(lot.ticker, lot.devise, undefined)
+            nowPriceMap.set(tk, d ?? { price: lot.prixActuel, fxRate: lot.tauxActuelCHF })
+          }))
+          const nowNetQty = new Map<string, number>()
+          for (const p of nowActiveLong) {
+            const tk = p.ticker.toUpperCase()
+            nowNetQty.set(tk, (nowNetQty.get(tk) ?? 0) + p.quantite)
+          }
+          for (const p of allDeltaLots) {
+            if (p.dateAchat <= today) {
+              const tk = p.ticker.toUpperCase()
+              nowNetQty.set(tk, (nowNetQty.get(tk) ?? 0) + p.quantite)
+            }
+          }
+          // Flush remaining cash-flow events
+          let nowNetCf = 0
+          let tmpCfIdx = cfIdx
+          while (tmpCfIdx < cfEvents.length) {
+            const cf = cfEvents[tmpCfIdx++]
+            nowNetCf += cf.type === 'buy' ? cf.amount : -cf.amount
+          }
+          let nowPortfolioV = 0
+          for (const [tk, netQty] of nowNetQty) {
+            if (netQty <= 0) continue
+            const pr = nowPriceMap.get(tk)
+            if (!pr) continue
+            nowPortfolioV += netQty * pr.price * pr.fxRate
+          }
+          if (nowPortfolioV > 0) {
+            let nowTotalUnits = totalUnits
+            if (nowNetCf !== 0) {
+              const prevUnitV = prevPortfolioV > 0 ? prevPortfolioV / nowTotalUnits : nowPortfolioV / INITIAL_UNITS
+              if (prevUnitV > 0) nowTotalUnits += nowNetCf / prevUnitV
+              if (nowTotalUnits <= 0) nowTotalUnits = INITIAL_UNITS
+            }
+            const nowUnitV = nowPortfolioV / nowTotalUnits
+            const nowPeak = Math.max(peakUnitV, nowUnitV)
+            const nowDD = nowPeak > 0 ? ((nowUnitV - nowPeak) / nowPeak) * 100 : 0
+            result.push({ x: 1, dd: nowDD, label: 'Maintenant' })
+          }
+        }
+      }
+      const rawDD = result.length > 1
+        ? result.filter((pt, i) => i === 0 || Math.abs(pt.dd - result[i - 1].dd) > 0.0001)
+        : result
+      const finalDD = rawDD.length > 1
+        ? rawDD.map((pt, i) => ({ ...pt, x: i / (rawDD.length - 1) }))
+        : rawDD
+      const sampledDD = downsampleEvery > 1 ? finalDD.filter((_, i) => i % downsampleEvery === 0 || i === finalDD.length - 1) : finalDD
+      const maxDDPt = sampledDD.reduce((m, p) => p.dd < m.dd ? p : m, sampledDD[0])
       if (onMaxDrawdown && maxDDPt) onMaxDrawdown(maxDDPt.dd, maxDDPt.label)
-      setDdPts(result)
+      setDdPts(sampledDD)
       setLoading(false)
     }
     fetchAll()
@@ -1833,18 +2188,35 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
   const areaPath = [`M ${px(points[0].x)} ${zeroY}`, ...points.map(p => `L ${px(p.x)} ${py(p.dd)}`), `L ${px(points[points.length-1].x)} ${zeroY}`, 'Z'].join(' ')
   const maxDDPt = points.reduce((m, p) => p.dd < m.dd ? p : m, points[0])
   const hovered = hoverIdx !== null ? points[hoverIdx] : null
+  const _ddDisp = hovered ?? (points.length > 0 ? points[points.length - 1] : null)
 
   return (
     <>
+    {/* ── Stat header ── */}
+    <div className="mb-3 min-h-[52px] px-5">
+      {_ddDisp ? (
+        <>
+          <div className="flex items-baseline gap-2">
+            <span className="text-2xl font-bold tabular-nums text-[#EF4444]">
+              {_ddDisp.dd.toFixed(2)}%
+            </span>
+            <span className="text-sm text-[#9E9A93]">drawdown</span>
+          </div>
+          {hovered && (
+            <div className="text-xs text-[#9E9A93] mt-0.5">{hovered.label}</div>
+          )}
+        </>
+      ) : null}
+    </div>
     {isZoomedDd && (
-      <div className="flex justify-end mb-1">
+      <div className="flex justify-end mb-1 px-5">
         <button type="button" onClick={() => setZoomWDd([0, 1])}
-          className="text-xs text-[#9E9A93] hover:text-[#2B6B5A] px-2 py-0.5 rounded border border-[#DDD9D1] dark:border-[#2a3f52]">
+          className="text-xs text-[#9E9A93] hover:text-[#14B8A6] px-2 py-0.5 rounded border border-[#DDD9D1] dark:border-[#323B4A]">
           ↺ Réinitialiser zoom
         </button>
       </div>
     )}
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H, cursor: isZoomedDd ? 'grab' : 'default' }}
+    <svg ref={chartProbeRef} viewBox={`0 0 ${W} ${H}`} style={{ display: 'block', width: '100%', height: H, cursor: isZoomedDd ? 'grab' : 'default' }}
       onMouseLeave={() => { setHoverIdx(null); setHoverMxDd(null); zoomDragDd.current = null }}
       onMouseDown={e => {
         if (!isZoomedDd) return
@@ -1870,7 +2242,7 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
           const d = Math.abs(p.x - t); if (d < bd) { bd = d; best = i }
         })
         if (best < 0) return
-        setHoverIdx(best); setHoverMxDd(Math.max(px(firstVisD.x), Math.min(mx, px(lastVisD.x))))
+        setHoverIdx(best); setHoverMxDd(px(points[best].x))
       }}
       onWheel={e => {
         e.preventDefault()
@@ -1886,54 +2258,47 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
       <defs>
         <clipPath id="dd-clip"><rect x={PAD.l} y={PAD.t} width={iW} height={iH} /></clipPath>
         <linearGradient id="dd-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#DC2626" stopOpacity="0.36" />
-          <stop offset="100%" stopColor="#DC2626" stopOpacity="0.02" />
+          <stop offset="0%" stopColor="#EF4444" stopOpacity="0.36" />
+          <stop offset="100%" stopColor="#EF4444" stopOpacity="0.02" />
         </linearGradient>
       </defs>
-      {tickVals.map((v, i) => (
-        <g key={i}>
-          <line x1={PAD.l} y1={py(v)} x2={W - PAD.r} y2={py(v)} stroke="#E2DDD6" strokeWidth="0.4" strokeDasharray="4 4" />
-          <text x={PAD.l - 4} y={py(v) + 4} textAnchor="end" fontSize="10" fill="#9E9A93">{v === 0 ? '0%' : `${v.toFixed(1)}%`}</text>
-        </g>
-      ))}
       <g clipPath="url(#dd-clip)">
       <line x1={PAD.l} y1={zeroY} x2={W - PAD.r} y2={zeroY} stroke="#6B7280" strokeWidth="1.2" opacity="0.75" />
       <path d={areaPath} fill="url(#dd-fill)" />
-      <path d={points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${px(p.x)} ${py(p.dd)}`).join(' ')} fill="none" stroke="#DC2626" strokeWidth="2" />
-      <circle cx={px(maxDDPt.x)} cy={py(maxDDPt.dd)} r="3.5" fill="#DC2626" />
+
+      {(() => {
+        const R = 4
+        const pts: [number,number][] = points.map(p => [px(p.x), py(p.dd)])
+        let d = pts.length < 2 ? '' : `M${pts[0][0]},${pts[0][1]}`
+        for (let i = 1; i < pts.length - 1; i++) {
+          const [ax,ay]=pts[i-1],[bx,by]=pts[i],[cx2,cy2]=pts[i+1]
+          const d1=Math.sqrt((bx-ax)**2+(by-ay)**2), d2=Math.sqrt((cx2-bx)**2+(cy2-by)**2)
+          const r=Math.min(R,d1/2,d2/2)
+          d+=` L${bx-r*(bx-ax)/d1},${by-r*(by-ay)/d1} Q${bx},${by} ${bx+r*(cx2-bx)/d2},${by+r*(cy2-by)/d2}`
+        }
+        if (pts.length > 1) d+=` L${pts[pts.length-1][0]},${pts[pts.length-1][1]}`
+        return <path d={d} fill="none" stroke="#EF4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      })()}
+      <circle cx={px(maxDDPt.x)} cy={py(maxDDPt.dd)} r="3.5" fill="#EF4444" />
       {hovered && (
         <g>
           <line x1={hoverMxDd ?? px(hovered.x)} y1={PAD.t} x2={hoverMxDd ?? px(hovered.x)} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
-          <circle cx={px(hovered.x)} cy={py(hovered.dd)} r="3" fill="#DC2626" />
+          <circle cx={px(hovered.x)} cy={py(hovered.dd)} r="3" fill="#EF4444" />
           {(() => {
-            const tx = Math.min(Math.max(px(hovered.x), PAD.l + 62), W - PAD.r - 62)
-            const below = py(hovered.dd) + 20 < H - PAD.b - 20
-            const ty = below ? py(hovered.dd) + 12 : py(hovered.dd) - 36
+            const mx2 = hoverMxDd ?? px(hovered.x)
+            const lx = Math.min(Math.max(mx2, PAD.l + 22), W - PAD.r - 22)
+            const labelAbove = py(hovered.dd) < PAD.t + 28
+            const ly = labelAbove ? py(hovered.dd) + 20 : py(hovered.dd) - 28
             return (
-              <g transform={`translate(${tx}, ${ty})`}>
-                <rect x="-62" y="-6" width="124" height="36" rx="5" fill="#221010" stroke="#5A2020" strokeWidth="0.6" opacity="0.96" />
-                <text x="0" y="8" textAnchor="middle" fontSize="10" fontWeight="500" fill="#B8AEA8">{hovered.label}</text>
-                <text x="0" y="22" textAnchor="middle" fontSize="12" fontWeight="700" fill="#F87171">{hovered.dd.toFixed(2)}%</text>
+              <g transform={`translate(${lx}, ${ly})`}>
+                <rect x="-22" y="-9" width="44" height="18" rx="4" fill="#221010" stroke="#5A2020" strokeWidth="0.6" opacity="0.92" />
+                <text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="500" fill="#B8AEA8">{hovered.label}</text>
               </g>
             )
           })()}
         </g>
       )}
       </g>
-      {(() => {
-        const _vp = visPtsD; const _n = _vp.length
-        const _maxL = Math.max(2, Math.min(5, Math.floor(iW / 88)))
-        const _step = Math.max(1, Math.ceil(_n / _maxL))
-        const _idxs: number[] = [0]
-        for (let _i = _step; _i < _n - 1; _i += _step) _idxs.push(_i)
-        _idxs.push(_n - 1)
-        if (_idxs.length > 1 && (_vp[_n - 1].x - _vp[_idxs[_idxs.length - 2]].x) * iW < 44) _idxs.splice(_idxs.length - 2, 1)
-        return _idxs.map(idx => {
-          const p = _vp[idx]; const isLst = idx === _n - 1 && p === points[points.length - 1]; const isFst = idx === 0
-          const _x = isFst || isLst ? px(p.x) : Math.max(PAD.l + 26, Math.min(W - PAD.r - 26, px(p.x)))
-          return <text key={idx} x={_x} y={H - 6} textAnchor="middle" fontSize="10" fill="#9E9A93">{isLst ? 'Auj.' : p.label}</text>
-        })
-      })()}
 
     </svg>
     <div style={{ height: 32 }} />
@@ -1983,11 +2348,12 @@ function AllocChart({ data }: { data: PositionCalc[] }) {
 
   const totalVal = openVal.reduce((s, p) => s + p.valeurCHF, 0)
   if (totalVal <= 0) return null
-  const byCategory = CATEGORIES
-    .map(cat => ({ cat, val: openVal.filter(p => p.categorie === cat).reduce((s, p) => s + p.valeurCHF, 0), color: CAT_COLOR[cat] }))
+  const allPortfolioCats = [...new Set(openVal.map(p => p.categorie))].filter(c => c && c !== 'Tout')
+  const byCategory = allPortfolioCats
+    .map(cat => ({ cat, val: openVal.filter(p => p.categorie === cat).reduce((s, p) => s + p.valeurCHF, 0), color: CAT_COLOR[cat] ?? '#8899AA' }))
     .filter(c => c.val > 0).sort((a, b) => b.val - a.val)
 
-  const CX = 90, CY = 90, R = 72, IR = 46
+  const CX = 125, CY = 125, R = 100, IR = 78
   const GAP = 0.018 // radians gap between slices
   const slices: { cat: string; color: string; val: number; pct: number; startA: number; endA: number }[] = []
   let cursor = -Math.PI / 2
@@ -2011,46 +2377,118 @@ function AllocChart({ data }: { data: PositionCalc[] }) {
 
   const hovSlice = slices.find(s => s.cat === hovered)
   const centerLabel = hovSlice
-    ? { top: hovSlice.pct.toFixed(1) + '%', bottom: hovSlice.cat }
-    : { top: (totalVal / 1000).toFixed(1) + 'k', bottom: 'CHF total' }
+    ? { top: hovSlice.pct.toFixed(2) + '%', mid: hovSlice.cat, val: hovSlice.val.toLocaleString('fr-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' CHF' }
+    : { top: totalVal.toLocaleString('fr-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), mid: 'CHF total', val: null }
 
   return (
-    <div className="flex items-center gap-6">
-      <svg width="180" height="180" viewBox="0 0 180 180" className="flex-shrink-0">
-        {slices.map(s => (
-          <path
-            key={s.cat}
-            d={arc(CX, CY, R, IR, s.startA, s.endA, hovered === s.cat ? 4 : 0)}
-            fill={s.color}
-            opacity={hovered && hovered !== s.cat ? 0.35 : 1}
-            style={{ transition: 'opacity 0.15s, d 0.15s', cursor: 'pointer' }}
-            onMouseEnter={() => setHovered(s.cat)}
-            onMouseLeave={() => setHovered(null)}
-          />
-        ))}
-        <text x={CX} y={CY - 7} textAnchor="middle" fontSize="15" fontWeight="700"
-          fill={hovSlice ? hovSlice.color : '#1B3050'} className="dark:fill-white font-mono">
-          {centerLabel.top}
-        </text>
-        <text x={CX} y={CY + 10} textAnchor="middle" fontSize="9.5" fill="#9E9A93">
-          {centerLabel.bottom}
-        </text>
-      </svg>
-      <div className="flex flex-col gap-2 justify-center">
-        {slices.map(({ cat, pct, color }) => (
-          <div key={cat}
-            className="flex items-center gap-1.5 cursor-pointer"
-            style={{ opacity: hovered && hovered !== cat ? 0.4 : 1, transition: 'opacity 0.15s' }}
-            onMouseEnter={() => setHovered(cat)}
-            onMouseLeave={() => setHovered(null)}
-          >
-            <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
-            <span className="text-xs font-mono text-[#1B3050] dark:text-[#E8E4DC]">{pct.toFixed(0)}%</span>
-            <span className="text-xs text-[#5C6880]">{cat}</span>
-          </div>
-        ))}
-      </div>
-    </div>
+    <svg width="250" height="250" viewBox="0 0 250 250" style={{display:'block',margin:'0 auto'}}>
+      {slices.map(s => (
+        <path
+          key={s.cat}
+          d={arc(CX, CY, R, IR, s.startA, s.endA, hovered === s.cat ? 4 : 0)}
+          fill={s.color}
+          opacity={hovered && hovered !== s.cat ? 0.35 : 1}
+          style={{ transition: 'opacity 0.15s, d 0.15s', cursor: 'pointer' }}
+          onMouseEnter={() => setHovered(s.cat)}
+          onMouseLeave={() => setHovered(null)}
+        />
+      ))}
+      <text x={CX} y={hovSlice ? CY - 14 : CY - 7} textAnchor="middle" fontSize="15" fontWeight="700"
+        fill={hovSlice ? hovSlice.color : '#1B3050'} className="dark:fill-white font-mono" style={{transition:'y 0.15s'}}>
+        {centerLabel.top}
+      </text>
+      <text x={CX} y={hovSlice ? CY + 5 : CY + 10} textAnchor="middle" fontSize="9.5" fill="#9E9A93" style={{transition:'y 0.15s'}}>
+        {centerLabel.mid}
+      </text>
+      {hovSlice && <text x={CX} y={CY + 20} textAnchor="middle" fontSize="8.5" fill="#9E9A93" fontWeight="500">
+        {centerLabel.val}
+      </text>}
+    </svg>
+  )
+}
+
+// ─── Chart: Allocation par position ─────────────────────────────────────────
+function PositionsAllocChart({ data }: { data: PositionCalc[] }) {
+  const [hovered, setHovered] = React.useState<string | null>(null)
+
+  const byTicker = React.useMemo(() => {
+    const map: Record<string, PositionCalc[]> = {}
+    for (const p of data) {
+      if (p.dateVente) continue
+      const k = p.ticker.toUpperCase();
+      (map[k] ??= []).push(p)
+    }
+    const result: { ticker: string; nom: string; valeurCHF: number }[] = []
+    for (const [ticker, lots] of Object.entries(map)) {
+      const netQty = lots.reduce((s, p) => s + p.quantite, 0)
+      if (netQty <= 0) continue
+      const ref = lots.find(p => p.quantite > 0) ?? lots[0]
+      result.push({ ticker, nom: ref.nom, valeurCHF: netQty * ref.prixActuel * ref.tauxActuelCHF })
+    }
+    return result.sort((a, b) => b.valeurCHF - a.valeurCHF)
+  }, [data])
+
+  const totalVal = byTicker.reduce((s, p) => s + p.valeurCHF, 0)
+  if (totalVal <= 0) return null
+
+  const colorPalette = [
+    '#2563EB','#7C3AED','#6366F1','#3B82F6','#60A5FA','#93C5FD','#14B8A6',
+    '#1D4ED8','#5B21B6','#4F46E5','#1E40AF','#2DD4BF','#0EA5E9','#7DD3FC',
+    '#3730A3','#8B5CF6','#38BDF8','#A5B4FC','#67E8F9','#BAE6FD','#C4B5FD',
+  ]
+
+  const CX = 125, CY = 125, R = 100, IR = 78
+  const GAP = 0.014
+  const slices: { ticker: string; nom: string; color: string; val: number; pct: number; startA: number; endA: number }[] = []
+  let cursor = -Math.PI / 2
+
+  byTicker.forEach(({ ticker, nom, valeurCHF }, i) => {
+    const pct = valeurCHF / totalVal
+    const sweep = pct * 2 * Math.PI - GAP
+    slices.push({ ticker, nom, color: colorPalette[i % colorPalette.length], val: valeurCHF, pct: pct * 100, startA: cursor + GAP / 2, endA: cursor + GAP / 2 + sweep })
+    cursor += pct * 2 * Math.PI
+  })
+
+  function arc(cx: number, cy: number, r: number, ir: number, startA: number, endA: number, expand = 0) {
+    const cos = Math.cos, sin = Math.sin
+    const re = r + expand, ire = ir - expand
+    const x1 = cx + re * cos(startA), y1 = cy + re * sin(startA)
+    const x2 = cx + re * cos(endA),   y2 = cy + re * sin(endA)
+    const x3 = cx + ire * cos(endA),  y3 = cy + ire * sin(endA)
+    const x4 = cx + ire * cos(startA),y4 = cy + ire * sin(startA)
+    const large = endA - startA > Math.PI ? 1 : 0
+    return `M ${x1} ${y1} A ${re} ${re} 0 ${large} 1 ${x2} ${y2} L ${x3} ${y3} A ${ire} ${ire} 0 ${large} 0 ${x4} ${y4} Z`
+  }
+
+  const hovSlice = slices.find(s => s.ticker === hovered)
+  const centerLabel = hovSlice
+    ? { top: hovSlice.pct.toFixed(2) + '%', mid: hovSlice.nom, val: hovSlice.val.toLocaleString('fr-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' CHF' }
+    : { top: totalVal.toLocaleString('fr-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), mid: 'CHF total', val: null }
+
+  return (
+    <svg width="250" height="250" viewBox="0 0 250 250" style={{display:'block',margin:'0 auto'}}>
+      {slices.map(s => (
+        <path
+          key={s.ticker}
+          d={arc(CX, CY, R, IR, s.startA, s.endA, hovered === s.ticker ? 4 : 0)}
+          fill={s.color}
+          opacity={hovered && hovered !== s.ticker ? 0.35 : 1}
+          style={{ transition: 'opacity 0.15s, d 0.15s', cursor: 'pointer' }}
+          onMouseEnter={() => setHovered(s.ticker)}
+          onMouseLeave={() => setHovered(null)}
+        />
+      ))}
+      <text x={CX} y={hovSlice ? CY - 14 : CY - 7} textAnchor="middle" fontSize="15" fontWeight="700"
+        fill={hovSlice ? hovSlice.color : '#1B3050'} className="dark:fill-white font-mono" style={{transition:'y 0.15s'}}>
+        {centerLabel.top}
+      </text>
+      <text x={CX} y={hovSlice ? CY + 5 : CY + 10} textAnchor="middle" fontSize="9.5" fill="#9E9A93" style={{transition:'y 0.15s'}}>
+        {centerLabel.mid}
+      </text>
+      {hovSlice && <text x={CX} y={CY + 20} textAnchor="middle" fontSize="8.5" fill="#9E9A93" fontWeight="500">
+        {centerLabel.val}
+      </text>}
+    </svg>
   )
 }
 
@@ -2114,10 +2552,10 @@ function InvProfileCard({ profile }: { profile: InvProfile }) {
   const profileType = React.useMemo(() => deriveProfileType(profile), [profile])
 
   return (
-    <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5 flex flex-col gap-4">
+    <div className="bg-white dark:bg-[#1E2530] rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] p-5 flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-[#1B3050] dark:text-white">Profil d&apos;investisseur</h3>
-        <a href="/profil" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#DDD9D1] dark:border-[#1e3347] text-xs font-medium text-[#2B6B5A] hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] transition-colors">
+        <a href="/profil" className="flex items-center gap-1.5 px-3 py-1.5 rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] text-xs font-medium text-[#14B8A6] hover:bg-[#F5F3EF] dark:hover:bg-[#253040] transition-colors">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M9 1L11 3L4 10H2V8L9 1Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>
           Modifier
         </a>
@@ -2129,19 +2567,19 @@ function InvProfileCard({ profile }: { profile: InvProfile }) {
         </div>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <div className="bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-3">
+        <div className="bg-[#F5F3EF] dark:bg-[#1E2530] rounded-sm p-3">
           <p className="text-xs text-[#9E9A93] mb-0.5">Horizon</p>
           <p className="text-sm font-semibold text-[#1B3050] dark:text-white">{profile.horizon} ans</p>
         </div>
-        <div className="bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-3">
+        <div className="bg-[#F5F3EF] dark:bg-[#1E2530] rounded-sm p-3">
           <p className="text-xs text-[#9E9A93] mb-0.5">Tolérance perte</p>
           <p className="text-sm font-semibold text-[#1B3050] dark:text-white">-{profile.loss} %</p>
         </div>
-        <div className="bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-3">
+        <div className="bg-[#F5F3EF] dark:bg-[#1E2530] rounded-sm p-3">
           <p className="text-xs text-[#9E9A93] mb-0.5">Besoin de liquidité</p>
           <p className="text-sm font-semibold text-[#1B3050] dark:text-white">{profile.liquidity === 'haute' ? '1–3 ans' : profile.liquidity === 'moyenne' ? '3–7 ans' : '7+ ans'}</p>
         </div>
-        <div className="bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-3">
+        <div className="bg-[#F5F3EF] dark:bg-[#1E2530] rounded-sm p-3">
           <p className="text-xs text-[#9E9A93] mb-0.5">Objectif</p>
           <p className="text-sm font-semibold text-[#1B3050] dark:text-white">{profile.objective === 'inflation' ? '~2–3 %/an' : profile.objective === 'modéré' ? '~5–7 %/an' : profile.objective === 'croissance' ? '~8–10 %/an' : '~10–15 %/an'}</p>
         </div>
@@ -2149,6 +2587,264 @@ function InvProfileCard({ profile }: { profile: InvProfile }) {
     </div>
   )
 }
+
+// ─── PnL par période (API snapshots) ─────────────────────────────────────────
+function PnLBarChart({ positions }: { positions: PositionCalc[] }) {
+  type TabId = 'annuel' | 'mensuel' | 'hebdomadaire' | 'journalier'
+  const [tab, setTab] = React.useState<TabId>('mensuel')
+  const tabs: { id: TabId; label: string }[] = [
+    { id: 'annuel',        label: 'Annuel' },
+    { id: 'mensuel',       label: 'Mensuel' },
+    { id: 'hebdomadaire',  label: 'Hebdo' },
+    { id: 'journalier',    label: 'Journalier' },
+  ]
+
+  // dailyPnl : date ISO → delta total CHF ce jour
+  const [dailyPnl, setDailyPnl] = React.useState<Map<string, number>>(new Map())
+  const [loading, setLoading]   = React.useState(true)
+  const [hovered, setHovered]   = React.useState<number | null>(null)
+  const [unit, setUnit]       = React.useState<'CHF' | 'PCT'>('CHF')
+
+  React.useEffect(() => {
+    if (positions.length === 0) { setLoading(false); return }
+    setLoading(true)
+
+    const tickers  = [...new Set(positions.map(p => p.ticker))]
+    const fxPairs  = [...new Set(positions.filter(p => p.devise !== 'CHF').map(p => `${p.devise}/CHF`))]
+    const allSyms  = [...tickers, ...fxPairs]
+
+    fetchHistory(allSyms.join(','), false, '1day').then(hist => {
+      const map = new Map<string, number>()
+
+      for (const p of positions) {
+        const ph = hist[p.ticker]
+        if (!ph || ph.dates.length < 2) continue
+
+        const buyDate  = p.dateAchat.slice(0, 10)
+        const sellDate = p.dateVente ? p.dateVente.slice(0, 10) : '9999-12-31'
+
+        // ── Collecter les deltas journaliers dans la fenêtre de détention ──
+        const dayDeltas: { date: string; delta: number }[] = []
+        let totalHistDelta = 0
+
+        for (let i = 1; i < ph.dates.length; i++) {
+          const date = ph.dates[i]
+          if (date < buyDate || date > sellDate) continue
+          const d = ph.closes[i] - ph.closes[i - 1]
+          dayDeltas.push({ date, delta: d })
+          totalHistDelta += d
+        }
+
+        if (dayDeltas.length === 0) continue
+
+        // ── Distribuer gainCHF proportionnellement aux deltas de prix ──────
+        // Garantit que Σ contributions = p.gainCHF exactement
+        if (Math.abs(totalHistDelta) < 1e-10) {
+          // Prix quasi-flat : répartir uniformément
+          const share = p.gainCHF / dayDeltas.length
+          for (const { date } of dayDeltas) map.set(date, (map.get(date) ?? 0) + share)
+        } else {
+          for (const { date, delta } of dayDeltas) {
+            const contribution = (delta / totalHistDelta) * p.gainCHF
+            map.set(date, (map.get(date) ?? 0) + contribution)
+          }
+        }
+      }
+
+      setDailyPnl(map)
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positions.length])
+
+  // ── Calcul des entrées selon l'onglet ─────────────────────────────────────
+  const data = React.useMemo(() => {
+    const getISOWeek = (d: Date) => {
+      const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+      tmp.setUTCDate(tmp.getUTCDate() + 4 - (tmp.getUTCDay() || 7))
+      const ys = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1))
+      return Math.ceil(((tmp.getTime() - ys.getTime()) / 86400000 + 1) / 7)
+    }
+
+    type Entry = { label: string; shortLabel: string; gain: number }
+    let entries: Entry[] = []
+
+    if (tab === 'annuel') {
+      const byYear = new Map<number, number>()
+      dailyPnl.forEach((v, date) => {
+        const y = parseInt(date.slice(0, 4))
+        byYear.set(y, (byYear.get(y) ?? 0) + v)
+      })
+      const currentYear = new Date().getFullYear()
+      // Toujours au moins 7 années : année actuelle + 6 précédentes
+      const minYear = Math.min(currentYear - 6, ...Array.from(byYear.keys()))
+      const allYears: number[] = []
+      for (let y = minYear; y <= currentYear; y++) allYears.push(y)
+      entries = allYears.map(y => ({ label: String(y), shortLabel: String(y), gain: byYear.get(y) ?? 0 }))
+
+    } else if (tab === 'mensuel') {
+      const MONTH_LBL = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre']
+      const byMonth = new Array(12).fill(0)
+      dailyPnl.forEach((v, date) => { byMonth[parseInt(date.slice(5, 7)) - 1] += v })
+      entries = MONTH_LBL.map((lbl, i) => ({ label: lbl, shortLabel: lbl, gain: byMonth[i] }))
+
+    } else if (tab === 'hebdomadaire') {
+      const byWeek = new Array(53).fill(0)
+      dailyPnl.forEach((v, date) => {
+        const w = getISOWeek(new Date(date))
+        if (w >= 1 && w <= 52) byWeek[w] += v
+      })
+      entries = Array.from({ length: 52 }, (_, i) => ({
+        label: `Semaine ${i + 1}`, shortLabel: `S${i + 1}`, gain: byWeek[i + 1]
+      }))
+
+    } else {
+      const DAY_LBL = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche']
+      const byDay = new Array(7).fill(0)
+      dailyPnl.forEach((v, date) => {
+        const dow = new Date(date).getDay() // 0=dim, 6=sam
+        // Lun=0 Mar=1 Mer=2 Jeu=3 Ven=4 Sam=5 Dim=6
+        const idx = dow === 0 ? 6 : dow - 1
+        if (idx >= 0 && idx < 7) byDay[idx] += v
+      })
+      entries = DAY_LBL.map((lbl, i) => ({ label: lbl, shortLabel: lbl, gain: byDay[i] }))
+    }
+
+    const maxAbs = Math.max(...entries.map(e => Math.abs(e.gain)), 1)
+    const total  = entries.reduce((s, e) => s + e.gain, 0)
+    const totalCost = positions.filter(p => !p.dateVente).reduce((s, p) => s + p.coutCHF, 0)
+    return { entries, maxAbs, total, totalPct: totalCost > 0 ? (total / totalCost) * 100 : 0 }
+  }, [dailyPnl, tab, positions])
+
+
+  const totalCostOpen = positions.filter(p => !p.dateVente).reduce((s, p) => s + p.coutCHF, 0)
+
+  /* Valeur affichée dans l’en-tête */
+  const summaryGain    = hovered !== null && data.entries[hovered] ? data.entries[hovered].gain : data.total
+  const summaryLbl     = hovered !== null && data.entries[hovered] ? data.entries[hovered].label : null
+  const summaryIsPos   = summaryGain >= 0
+  const summaryPct     = totalCostOpen > 0 ? (summaryGain / totalCostOpen) * 100 : 0
+
+  const fmtChf = (n: number) => {
+    const abs = Math.abs(n)
+    const s = abs >= 10000 ? (abs / 1000).toFixed(1) + 'k' : abs.toFixed(0)
+    return (n >= 0 ? '+' : '−') + 'CHF ' + s
+  }
+  const fmtPct = (n: number) => (n >= 0 ? '+' : '') + n.toFixed(2) + '%'
+
+  return (
+    <div className="bg-white dark:bg-[#1E2530] rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] overflow-hidden">
+      {/* En-tête */}
+      <div className="flex items-center justify-between px-5 pt-4 pb-0">
+        <h2 className="text-base font-bold text-[#1B3050] dark:text-white tracking-tight">PnL par période</h2>
+        {/* Toggle CHF / % */}
+        <div className="flex items-center rounded-md border border-[#DDD9D1] dark:border-[#2A3240] overflow-hidden text-[11px] font-semibold">
+          <button
+            onClick={() => setUnit('CHF')}
+            className={`px-2.5 py-1 transition-colors ${unit === 'CHF' ? 'bg-[#1B3050] dark:bg-[#2A3A50] text-white' : 'text-[#9E9A93] hover:text-[#5C6880] dark:hover:text-white/70'}`}>
+            CHF
+          </button>
+          <button
+            onClick={() => setUnit('PCT')}
+            className={`px-2.5 py-1 transition-colors ${unit === 'PCT' ? 'bg-[#1B3050] dark:bg-[#2A3A50] text-white' : 'text-[#9E9A93] hover:text-[#5C6880] dark:hover:text-white/70'}`}>
+            %
+          </button>
+        </div>
+      </div>
+
+      {/* Onglets */}
+      <div className="flex items-center px-5 pt-2 pb-0">
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => { setTab(t.id); setHovered(null) }}
+            className={`relative px-2 py-1.5 text-[11px] font-semibold transition-colors mr-0.5
+              ${tab === t.id ? 'text-[#1B3050] dark:text-white' : 'text-[#9E9A93] hover:text-[#5C6880] dark:hover:text-white/70'}`}>
+            {t.label}
+            {tab === t.id && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1B3050] dark:bg-white rounded-full" />}
+          </button>
+        ))}
+      </div>
+      <div className="h-px bg-[#DDD9D1] dark:bg-[#253040] mx-5 mt-2 mb-0" />
+
+      {/* Résumé haut gauche */}
+      <div className="flex items-center gap-1.5 px-5 pt-2 pb-0 min-h-[20px]">
+        {!loading && summaryLbl && (
+          <>
+            <span className="text-[11px] text-[#9E9A93]">{summaryLbl}</span>
+            <span className={`text-[11px] font-semibold ${summaryIsPos ? 'text-[#14B8A6]' : 'text-[#EF4444]'}`}>
+              {unit === 'PCT' ? fmtPct(summaryPct) : fmtChf(summaryGain)}
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* Graphique */}
+      <div className="px-5 pt-3 pb-1">
+        {(() => {
+          const CHART_H = 80
+          const HALF    = CHART_H / 2
+          const n       = data.entries.length
+          const MAX_BAR = tab === 'annuel'
+            ? (n <= 12 ? 20 : Math.max(6, Math.floor((480 - GAP_MIN * (n - 1)) / n)))
+            : n <= 12 ? 20 : n <= 20 ? 8 : 9
+          const GAP_MIN = 3
+          const svgW    = 480
+          const barW    = Math.min(MAX_BAR, Math.max(2, Math.floor((svgW - GAP_MIN * (n - 1)) / n)))
+          const GAP     = n > 1 ? Math.max(GAP_MIN, Math.floor((svgW - barW * n) / (n - 1))) : 0
+          const usedW   = barW * n + GAP * (n - 1)
+          const ox      = Math.round((svgW - usedW) / 2)
+
+          return (
+            <svg viewBox={`0 0 ${svgW} ${CHART_H}`} width="100%"
+              style={{ display: 'block', overflow: 'visible' }}
+              onMouseLeave={() => setHovered(null)}>
+
+              {/* Ligne zéro */}
+              <line x1={ox} y1={HALF} x2={ox + usedW} y2={HALF}
+                stroke="#C8C4BC" strokeWidth="0.6" />
+
+              {loading
+                ? Array.from({ length: 12 }, (_, i) => {
+                    const lox = Math.round((svgW - 12 * (MAX_BAR + GAP_MIN)) / 2)
+                    return (
+                      <rect key={i} x={lox + i * (MAX_BAR + GAP_MIN)} y={HALF - 3} width={MAX_BAR} height={6} rx={1.5}
+                        fill="#DDD9D1" opacity={0.35} />
+                    )
+                  })
+                : data.entries.map((e, idx) => {
+                    const val    = unit === 'PCT' && totalCostOpen > 0 ? (e.gain / totalCostOpen) * 100 : e.gain
+                    const maxA   = unit === 'PCT' && totalCostOpen > 0
+                      ? Math.max(...data.entries.map(en => Math.abs(en.gain / totalCostOpen * 100)), 0.001)
+                      : data.maxAbs
+                    const isPos  = val >= 0
+                    const isHov  = hovered === idx
+                    const ratio  = Math.abs(val) / maxA
+                    const bH     = Math.max(ratio * (HALF - 4), val !== 0 ? 2 : 0)
+                    const x      = ox + idx * (barW + GAP)
+                    const y      = isPos ? HALF - bH : HALF
+                    const color  = isPos ? '#14B8A6' : '#EF4444'
+                    return (
+                      <g key={idx} style={{ cursor: 'pointer' }} onMouseEnter={() => setHovered(idx)}>
+                        {/* Zone de survol */}
+                        <rect x={x - 2} y={0} width={barW + 4} height={CHART_H} fill="transparent" />
+                        {/* Barre */}
+                        <rect x={x} y={y} width={barW} height={Math.max(bH, 2)} rx={1} fill={color}
+                          opacity={hovered !== null && !isHov ? 0.3 : 1}
+                          style={{ transition: 'opacity 0.12s' }} />
+
+                      </g>
+                    )
+                  })
+              }
+            </svg>
+          )
+        })()}
+      </div>
+
+
+    </div>
+  )
+}
+
 
 function InvestorProfileSection({
   data, profile,
@@ -2221,7 +2917,7 @@ function InvestorProfileSection({
   } | null>(null)
   const [histLoading, setHistLoading] = React.useState(false)
 
-  const histKey = netData.map(p => `${p.ticker}:${p.valeurCHF.toFixed(0)}`).join(',')
+  const histKey = netData.map(p => `${p.ticker}:${Math.round(p.valeurCHF / (total || 1) * 20)}`).join(',')
   React.useEffect(() => {
     if (!hasPositions || netData.length === 0 || total <= 0) return
     setHistStats(null)
@@ -2908,8 +3604,8 @@ function InvestorProfileSection({
     return (
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 220 }}>
         <defs>
-          <linearGradient id="mc-g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#2B6B5A" stopOpacity="0.25"/><stop offset="100%" stopColor="#2B6B5A" stopOpacity="0.05"/></linearGradient>
-          <linearGradient id="mc-g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#2B6B5A" stopOpacity="0.12"/><stop offset="100%" stopColor="#2B6B5A" stopOpacity="0.03"/></linearGradient>
+          <linearGradient id="mc-g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#14B8A6" stopOpacity="0.25"/><stop offset="100%" stopColor="#14B8A6" stopOpacity="0.05"/></linearGradient>
+          <linearGradient id="mc-g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#14B8A6" stopOpacity="0.12"/><stop offset="100%" stopColor="#14B8A6" stopOpacity="0.03"/></linearGradient>
         </defs>
         {visibleTicks.map((tk, i) => (
           <g key={i}>
@@ -2933,12 +3629,12 @@ function InvestorProfileSection({
         ))}
         <path d={area('p95', 'p5')}  fill="url(#mc-g2)"/>
         <path d={area('p75', 'p25')} fill="url(#mc-g1)"/>
-        <path d={line('p95')} fill="none" stroke="#2B6B5A" strokeWidth="0.8" strokeDasharray="4,2"/>
-        <path d={line('p5')}  fill="none" stroke="#2B6B5A" strokeWidth="0.8" strokeDasharray="4,2"/>
-        <path d={line('p75')} fill="none" stroke="#2B6B5A" strokeWidth="1.2"/>
-        <path d={line('p25')} fill="none" stroke="#2B6B5A" strokeWidth="1.2"/>
-        <path d={line('p50')} fill="none" stroke="#2B6B5A" strokeWidth="2"/>
-        <circle cx={xS(T - 1)} cy={yS(mcBands[T - 1].p50)} r="3" fill="#2B6B5A"/>
+        <path d={line('p95')} fill="none" stroke="#14B8A6" strokeWidth="0.8" strokeDasharray="4,2"/>
+        <path d={line('p5')}  fill="none" stroke="#14B8A6" strokeWidth="0.8" strokeDasharray="4,2"/>
+        <path d={line('p75')} fill="none" stroke="#14B8A6" strokeWidth="1.2"/>
+        <path d={line('p25')} fill="none" stroke="#14B8A6" strokeWidth="1.2"/>
+        <path d={line('p50')} fill="none" stroke="#14B8A6" strokeWidth="2"/>
+        <circle cx={xS(T - 1)} cy={yS(mcBands[T - 1].p50)} r="3" fill="#14B8A6"/>
       </svg>
     )
   }
@@ -2970,7 +3666,7 @@ function InvestorProfileSection({
         {tX.map((tk, i) => <text key={i} x={tk.x} y={H - 6} textAnchor="middle" fontSize="9" fill="#8899AA">{tk.label}</text>)}
         <text x={PAD.l + PW / 2} y={H - 2} textAnchor="middle" fontSize="9" fill="#8899AA">σ (risque)</text>
         <text x={10} y={PAD.t + PH / 2} textAnchor="middle" fontSize="9" fill="#8899AA" transform={`rotate(-90,10,${PAD.t + PH / 2})`}>E(R)</text>
-        {pts.map((p, i) => <circle key={i} cx={xS(p.s)} cy={yS(p.r)} r="2" fill="#2B6B5A" fillOpacity="0.25"/>)}
+        {pts.map((p, i) => <circle key={i} cx={xS(p.s)} cy={yS(p.r)} r="2" fill="#14B8A6" fillOpacity="0.25"/>)}
         {minSigma  && <circle cx={xS(minSigma.s)}  cy={yS(minSigma.r)}  r="5" fill="#3B82F6" stroke="white" strokeWidth="1.5"/>}
         {maxSharpe && <circle cx={xS(maxSharpe.s)} cy={yS(maxSharpe.r)} r="5" fill="#F59E0B" stroke="white" strokeWidth="1.5"/>}
         <circle cx={xS(current.s)} cy={yS(current.r)} r="6" fill="#EF4444" stroke="white" strokeWidth="2"/>
@@ -2982,13 +3678,13 @@ function InvestorProfileSection({
   }
 
   const tile = (label: string, value: string, sub?: string, color?: string, fxVal?: string) => (
-    <div className="relative bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-4 flex flex-col gap-1">
+    <div className="relative bg-white dark:bg-[#1E2530] rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] p-4 flex flex-col gap-1">
       <div className="flex items-start justify-between gap-1">
         <p className="text-xs text-[#5C6880] dark:text-[#7B8DA6] leading-tight pr-1">{label}</p>
         {sub && (
           <button
             className="flex-shrink-0 w-4 h-4 rounded-full text-[9px] font-bold border flex items-center justify-center transition-colors"
-            style={{ color: tip === label ? '#2B6B5A' : '#8899AA', borderColor: tip === label ? '#2B6B5A' : '#C4C9D4' }}
+            style={{ color: tip === label ? '#14B8A6' : '#8899AA', borderColor: tip === label ? '#14B8A6' : '#C4C9D4' }}
             onMouseEnter={() => setTip(label)}
             onMouseLeave={() => setTip(null)}
             onClick={() => setTip(tip === label ? null : label)}
@@ -3000,7 +3696,7 @@ function InvestorProfileSection({
         <p className="text-[10px] text-[#9E9A93] dark:text-[#5C7080] leading-tight">{fxVal}</p>
       )}
       {tip === label && sub && (
-        <div className="absolute top-0 right-6 z-30 bg-[#1B3050] text-white text-xs rounded-xl px-3 py-2 w-56 shadow-xl" style={{ transform: 'translateY(-105%)' }}>
+        <div className="absolute top-0 right-6 z-30 bg-[#1B3050] text-white text-xs rounded-sm px-3 py-2 w-56 shadow-xl" style={{ transform: 'translateY(-105%)' }}>
           {sub}
           <div className="absolute bottom-[-5px] right-3 w-2.5 h-2.5 bg-[#1B3050] rotate-45"/>
         </div>
@@ -3012,15 +3708,15 @@ function InvestorProfileSection({
     <div className="mt-8 space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <div className="w-1 h-6 rounded-full bg-[#2B6B5A]"/>
+        <div className="w-1 h-6 rounded-full bg-[#14B8A6]"/>
         <h2 className="text-lg font-semibold text-[#1B3050] dark:text-white">Analyse du portefeuille</h2>
       </div>
 
       {/* Analyses quantitatives (uniquement si positions) */}
       {hasPositions && (
-        <div className="bg-white dark:bg-[#162534] rounded-2xl border border-[#DDD9D1] dark:border-[#1e3347] overflow-hidden">
+        <div className="bg-white dark:bg-[#1E2530] rounded border border-[#DDD9D1] dark:border-[#2A3240] overflow-hidden">
           {/* Tab bar */}
-          <div className="flex items-center border-b border-[#DDD9D1] dark:border-[#1e3347]">
+          <div className="flex items-center border-b border-[#DDD9D1] dark:border-[#2A3240]">
             <div className="flex overflow-x-auto flex-1">
               {([
                 ['stats',       'Statistiques'],
@@ -3031,7 +3727,7 @@ function InvestorProfileSection({
               ] as const).map(([key, lbl]) => (
                 <button key={key} onClick={() => setTab(key)}
                   className={`px-5 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${tab === key
-                    ? 'border-[#2B6B5A] text-[#2B6B5A]'
+                    ? 'border-[#14B8A6] text-[#14B8A6]'
                     : 'border-transparent text-[#5C6880] dark:text-[#7B8DA6] hover:text-[#1B3050] dark:hover:text-white'}`}>
                   {lbl}
                 </button>
@@ -3041,13 +3737,13 @@ function InvestorProfileSection({
               {histStats && (
                 <button onClick={() => setShowFX(v => !v)}
                   title={showFX ? 'Afficher en devise locale' : 'Afficher en CHF (FX inclus)'}
-                  className={`px-2.5 py-1 rounded-lg border text-base transition-all ${showFX ? 'border-[#B5820F] bg-[#FEF3C7] dark:bg-[#2a2010]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-50 hover:opacity-100'}`}>
+                  className={`px-2.5 py-1 rounded-sm border text-base transition-all ${showFX ? 'border-[#B5820F] bg-[#FEF3C7] dark:bg-[#2a2010]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-50 hover:opacity-100'}`}>
                   🇨🇭
                 </button>
               )}
               <button onClick={() => setLongMode(v => !v)}
                 title={longMode ? 'Mode journalier (10 ans)' : 'Mode mensuel (historique maximum)'}
-                className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${longMode ? 'border-[#2B6B5A] bg-[#E8F5F1] dark:bg-[#0d2e24] text-[#2B6B5A] dark:text-[#5EC9A5]' : 'border-[#DDD9D1] dark:border-[#2a3f52] text-[#8899AA] opacity-50 hover:opacity-100'}`}>
+                className={`px-2.5 py-1 rounded-sm border text-[11px] font-semibold transition-all ${longMode ? 'border-[#14B8A6] bg-[#E8F5F1] dark:bg-[#0d2e24] text-[#14B8A6] dark:text-[#5EC9A5]' : 'border-[#DDD9D1] dark:border-[#323B4A] text-[#8899AA] opacity-50 hover:opacity-100'}`}>
                 📅 max
               </button>
             </div>
@@ -3081,7 +3777,7 @@ function InvestorProfileSection({
                         inCHF
                           ? `Gain moyen annuel sur la période analysée, en CHF. Historique — les années futures peuvent différer. · Formule : moyenne des rendements ${histStats?.isMonthly ? 'mensuels × 12' : 'journaliers × 252'}, converti en CHF`
                           : `Gain moyen annuel sur la période analysée. Historique — les années futures peuvent différer. · Formule : moyenne des rendements ${histStats?.isMonthly ? 'mensuels × 12' : 'journaliers × 252'}`,
-                        '#2B6B5A'
+                        '#14B8A6'
                       )}
                       {tile(
                         'Volatilité annuelle',
@@ -3146,12 +3842,12 @@ function InvestorProfileSection({
 
                 {/* ── Recommandations ── */}
                 {recommendations.length > 0 && (
-                  <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] overflow-hidden">
-                    <div className="px-4 py-3 border-b border-[#F5F3EF] dark:border-[#1e3347] flex items-center justify-between">
+                  <div className="rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] overflow-hidden">
+                    <div className="px-4 py-3 border-b border-[#F5F3EF] dark:border-[#2A3240] flex items-center justify-between">
                       <p className="text-xs font-semibold text-[#1B3050] dark:text-white uppercase tracking-wide">Recommandations</p>
                       <span className="text-[10px] text-[#9E9A93]">{recommendations.filter(r => r.severity === 'high').length > 0 && <span className="text-red-500 font-semibold">{recommendations.filter(r => r.severity === 'high').length} critique{recommendations.filter(r => r.severity === 'high').length > 1 ? 's' : ''}</span>}</span>
                     </div>
-                    <div className="divide-y divide-[#F5F3EF] dark:divide-[#1e3347]">
+                    <div className="divide-y divide-[#F5F3EF] dark:divide-[#2A3240]">
                     {recommendations.map((r, i) => (
                       <div key={i} className="flex items-start gap-3 px-4 py-3" style={{ borderLeft: `3px solid ${r.severity === 'high' ? '#EF4444' : r.severity === 'medium' ? '#F59E0B' : '#22C55E'}` }}>
                         <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm mt-0.5 ${r.severity === 'high' ? 'bg-red-100 dark:bg-red-900/30' : r.severity === 'medium' ? 'bg-amber-100 dark:bg-amber-900/30' : 'bg-green-100 dark:bg-green-900/30'}`}>
@@ -3177,12 +3873,12 @@ function InvestorProfileSection({
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <p className="text-xs text-[#8899AA]">{mcBands.length > 0 ? <>2 000 scénarios simulés mois par mois sur 20 ans, basés sur la volatilité annuelle et le rendement annuel attendu de votre portefeuille (section Statistiques). La <strong className="text-[#1B3050] dark:text-white">ligne épaisse</strong> = résultat médian. La <strong className="text-[#1B3050] dark:text-white">zone sombre</strong> = la moitié des scénarios (entre le défavorable et le favorable). La <strong className="text-[#1B3050] dark:text-white">zone claire</strong> = 90 % des scénarios en enlevant les 5 % de chaque extrême (de ×{mcBands[mcBands.length - 1].p5.toFixed(2)} à ×{mcBands[mcBands.length - 1].p95.toFixed(2)}).{showFX && histStats ? ' · CHF (FX inclus)' : ''}</> : <>2 000 scénarios simulés mois par mois sur 20 ans.</>}</p>
                 </div>
-                <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-3 bg-[#FAFAF8] dark:bg-[#0F1E2E]">
+                <div className="rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] p-3 bg-[#FAFAF8] dark:bg-[#253040]">
                   {mcSVG()}
                 </div>
                 {mcBands.length > 0 && (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {tile('Résultat médian', `×${mcBands[mcBands.length - 1].p50.toFixed(2)}`, `Dans 1 scénario sur 2, votre portefeuille atteint au moins ce multiple à 20 ans. C'est le résultat "typique".`, '#2B6B5A')}
+                    {tile('Résultat médian', `×${mcBands[mcBands.length - 1].p50.toFixed(2)}`, `Dans 1 scénario sur 2, votre portefeuille atteint au moins ce multiple à 20 ans. C'est le résultat "typique".`, '#14B8A6')}
                     {tile('Scénario favorable', `×${mcBands[mcBands.length - 1].p75.toFixed(2)}`, `Dans 1 scénario sur 4, votre portefeuille fait encore mieux. C'est un bon résultat, sans être exceptionnel.`)}
                     {tile('Scénario défavorable', `×${mcBands[mcBands.length - 1].p25.toFixed(2)}`, `Dans 3 scénarios sur 4, votre portefeuille fait mieux que ça. C'est le plancher probable hors crise majeure et durable.`, '#F97316')}
                   </div>
@@ -3200,7 +3896,7 @@ function InvestorProfileSection({
                   <p className="text-sm text-[#8899AA] text-center py-4">Aucune crise historique ne couvre la période de vos actifs.</p>
                 )}
                 {stressResults.map((sc, i) => (
-                  <div key={i} className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-4 space-y-2">
+                  <div key={i} className="rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] p-4 space-y-2">
                     <div className="flex justify-between items-center gap-2">
                       <p className="text-sm font-semibold text-[#1B3050] dark:text-white">{sc.label}</p>
                       <span className="text-sm font-bold" style={{ color: sc.loss < -0.15 ? '#EF4444' : sc.loss < 0 ? '#F97316' : '#22C55E' }}>
@@ -3208,7 +3904,7 @@ function InvestorProfileSection({
                       </span>
                     </div>
                     {/* Barre */}
-                    <div className="h-3 rounded-full bg-[#F0EDE8] dark:bg-[#1e3347] overflow-hidden">
+                    <div className="h-3 rounded-full bg-[#F0EDE8] dark:bg-[#253040] overflow-hidden">
                       <div className="h-full rounded-full transition-all" style={{
                         width: `${Math.min(100, Math.abs(sc.loss) * 100)}%`,
                         background: sc.loss < -0.15 ? '#EF4444' : sc.loss < 0 ? '#F97316' : '#22C55E'
@@ -3235,7 +3931,7 @@ function InvestorProfileSection({
                     }
                   </p>
                 </div>
-                <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-3 bg-[#FAFAF8] dark:bg-[#0F1E2E]">
+                <div className="rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] p-3 bg-[#FAFAF8] dark:bg-[#253040]">
                   {frontierSVG()}
                 </div>
                 {frontier.maxSharpe && frontier.minSigma && (
@@ -3246,8 +3942,8 @@ function InvestorProfileSection({
                   </div>
                 )}
                 {histStats && histStats.optWeights.length >= 1 && (
-                  <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] overflow-hidden">
-                    <div className="px-4 py-3 border-b border-[#F5F3EF] dark:border-[#1e3347] flex items-center justify-between">
+                  <div className="rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] overflow-hidden">
+                    <div className="px-4 py-3 border-b border-[#F5F3EF] dark:border-[#2A3240] flex items-center justify-between">
                       <p className="text-xs font-semibold text-[#1B3050] dark:text-white uppercase tracking-wide">Poids par actif</p>
                       <div className="flex gap-4 text-xs text-[#8899AA]">
                         <span className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-full bg-[#EF4444]"/> Actuel</span>
@@ -3257,14 +3953,14 @@ function InvestorProfileSection({
                     </div>
                     <table className="w-full text-xs">
                       <thead>
-                        <tr className="border-b border-[#F5F3EF] dark:border-[#1e3347]">
+                        <tr className="border-b border-[#F5F3EF] dark:border-[#2A3240]">
                           <th className="px-4 py-2 text-left font-semibold text-[#5C6880] uppercase tracking-wider">Actif</th>
                           <th className="px-4 py-2 text-right font-semibold text-[#EF4444] uppercase tracking-wider">Actuel</th>
                           <th className="px-4 py-2 text-right font-semibold text-[#F59E0B] uppercase tracking-wider">Max Sharpe</th>
                           <th className="px-4 py-2 text-right font-semibold text-[#3B82F6] uppercase tracking-wider">Min vol</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-[#F5F3EF] dark:divide-[#1e3347]">
+                      <tbody className="divide-y divide-[#F5F3EF] dark:divide-[#2A3240]">
                         {(() => {
                           // Group by ticker
                           const tickerOrder: string[] = []
@@ -3289,7 +3985,7 @@ function InvestorProfileSection({
                             const nom = lots[0].nom
                             return (
                               <React.Fragment key={ticker}>
-                                <tr className={`hover:bg-[#F5F3EF]/50 dark:hover:bg-[#1B2D3E]/50 ${isExp ? 'bg-[#F5F3EF]/30 dark:bg-[#1B2D3E]/30' : ''}`}>
+                                <tr className={`hover:bg-[#F5F3EF]/50 dark:hover:bg-[#253040]/50 ${isExp ? 'bg-[#F5F3EF]/30 dark:bg-[#1E2530]/30' : ''}`}>
                                   <td className="px-4 py-2.5">
                                     <div className="flex items-center gap-1.5">
                                       {isMulti && (
@@ -3309,7 +4005,7 @@ function InvestorProfileSection({
                                   <td className="px-4 py-2.5 text-right font-mono font-semibold text-[#3B82F6]">{(gMinVol * 100).toFixed(1)} %</td>
                                 </tr>
                                 {isMulti && isExp && lots.map((a, i) => (
-                                  <tr key={i} className="bg-[#F5F3EF]/60 dark:bg-[#1B2D3E]/60 text-[#5C6880] dark:text-[#7B8DA6]">
+                                  <tr key={i} className="bg-[#F5F3EF]/60 dark:bg-[#1E2530]/60 text-[#5C6880] dark:text-[#7B8DA6]">
                                     <td className="px-4 py-2 pl-9 text-xs">Lot {i + 1}</td>
                                     <td className="px-4 py-2 text-right font-mono text-xs text-[#EF4444]">{(a.wCurrent * 100).toFixed(1)} %</td>
                                     <td className="px-4 py-2 text-right font-mono text-xs text-[#F59E0B]">{(a.wOptimal * 100).toFixed(1)} %</td>
@@ -3322,7 +4018,7 @@ function InvestorProfileSection({
                         })()}
                       </tbody>
                     </table>
-                    <p className="px-4 py-2 text-xs text-[#9E9A93] border-t border-[#F5F3EF] dark:border-[#1e3347]">
+                    <p className="px-4 py-2 text-xs text-[#9E9A93] border-t border-[#F5F3EF] dark:border-[#2A3240]">
                       Monte Carlo sur données réelles — {histStats.yearsCount.toFixed(1)} ans · {histStats.optWeights.length} actif{histStats.optWeights.length > 1 ? 's' : ''} inclus
                     </p>
                   </div>
@@ -3335,7 +4031,7 @@ function InvestorProfileSection({
               <div className="space-y-4">
                 {histLoading && (
                   <div className="flex items-center gap-3 text-sm text-[#5C6880] dark:text-[#7B8DA6]">
-                    <svg className="animate-spin h-4 w-4 text-[#2B6B5A]" viewBox="0 0 24 24" fill="none">
+                    <svg className="animate-spin h-4 w-4 text-[#14B8A6]" viewBox="0 0 24 24" fill="none">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
                     </svg>
@@ -3350,18 +4046,18 @@ function InvestorProfileSection({
                 {histStats && (
                   <>
                     {/* Boutons — légende */}
-                    <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-4 space-y-3">
+                    <div className="rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] p-4 space-y-3">
                       <p className="text-xs font-semibold text-[#1B3050] dark:text-white uppercase tracking-wide">Contrôles de l'analyse</p>
                       <div className="space-y-2.5">
                         <div className="flex items-start gap-3">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded border text-base flex-shrink-0 mt-0.5 ${showFX ? 'border-[#B5820F] bg-[#FEF3C7] dark:bg-[#2a2010]' : 'border-[#DDD9D1] dark:border-[#2a3f52] opacity-60'}`}>🇨🇭</span>
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded border text-base flex-shrink-0 mt-0.5 ${showFX ? 'border-[#B5820F] bg-[#FEF3C7] dark:bg-[#2a2010]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-60'}`}>🇨🇭</span>
                           <div>
                             <p className="text-xs font-medium text-[#1B3050] dark:text-white">Ajustement CHF</p>
                             <p className="text-xs text-[#5C6880] dark:text-[#7B8DA6]">Convertit tous les rendements en francs suisses en intégrant les variations de change. Utile si vos actifs sont libellés en USD, EUR ou GBP — vous voyez ce que le portefeuille rapporte réellement en CHF, change inclus.</p>
                           </div>
                         </div>
                         <div className="flex items-start gap-3">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-semibold flex-shrink-0 mt-0.5 ${longMode ? 'border-[#2B6B5A] bg-[#E8F5F1] dark:bg-[#0d2e24] text-[#2B6B5A] dark:text-[#5EC9A5]' : 'border-[#DDD9D1] dark:border-[#2a3f52] text-[#8899AA] opacity-60'}`}>📅 max</span>
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-semibold flex-shrink-0 mt-0.5 ${longMode ? 'border-[#14B8A6] bg-[#E8F5F1] dark:bg-[#0d2e24] text-[#14B8A6] dark:text-[#5EC9A5]' : 'border-[#DDD9D1] dark:border-[#323B4A] text-[#8899AA] opacity-60'}`}>📅 max</span>
                           <div>
                             <p className="text-xs font-medium text-[#1B3050] dark:text-white">Historique long (jusqu'à 30 ans)</p>
                             <p className="text-xs text-[#5C6880] dark:text-[#7B8DA6]">Passe en données <strong className="text-[#1B3050] dark:text-white">mensuelles</strong> sur un maximum de 30 ans d'historique au lieu des 10 ans journaliers. Plus adapté pour mesurer le comportement long terme et les cycles économiques complets. Seuls les actifs avec au moins 10 ans d'historique sont inclus — les autres sont déjà couverts par le mode journalier.</p>
@@ -3371,7 +4067,7 @@ function InvestorProfileSection({
                     </div>
 
                     {/* Méthodologie en premier */}
-                    <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-4 space-y-2">
+                    <div className="rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] p-4 space-y-2">
                       <p className="text-xs font-semibold text-[#1B3050] dark:text-white uppercase tracking-wide">Comment ces chiffres sont calculés</p>
                       <p className="text-xs text-[#5C6880] dark:text-[#7B8DA6]">
                         Toutes les statistiques sont basées sur les cours réels de vos actifs entre{' '}
@@ -3384,7 +4080,7 @@ function InvestorProfileSection({
                         </strong>
                         {' '}({histStats.yearsCount.toFixed(1)} ans), fournis par Twelve Data et ajustés pour les divisions d&apos;actions. {histStats.isMonthly ? 'On mesure chaque mois la variation de valeur du portefeuille en appliquant vos proportions actuelles sur toute cette période — comme si vous aviez toujours détenu ces actifs dans ces mêmes proportions. Le rendement annuel et le risque sont ensuite calculés à partir de ces variations mensuelles.' : 'On mesure chaque jour la variation de valeur du portefeuille en appliquant vos proportions actuelles sur toute cette période — comme si vous aviez toujours détenu ces actifs dans ces mêmes proportions. Le rendement annuel et le risque sont ensuite calculés à partir de ces variations journalières.'}
                       </p>
-                      <div className="space-y-1 text-xs text-[#8899AA] pt-1 border-t border-[#F5F3EF] dark:border-[#1e3347]">
+                      <div className="space-y-1 text-xs text-[#8899AA] pt-1 border-t border-[#F5F3EF] dark:border-[#2A3240]">
                         <p>· E(Rp) = moyenne des rendements {histStats?.isMonthly ? 'mensuels × 12 (mois par an)' : 'journaliers × 252 (jours de bourse par an)'}</p>
                         <p>· σ = écart-type des rendements {histStats?.isMonthly ? 'mensuels × √12 (annualisé)' : 'journaliers × √252 (annualisé)'}</p>
                         <p>· VaR et CVaR paramétriques (loi normale, 95 %)</p>
@@ -3403,14 +4099,14 @@ function InvestorProfileSection({
                       ]
                       if (allAssets.length === 0) return null
                       const badge = (status: string) => {
-                        if (status === 'included') return <span className="text-[#2B6B5A] font-semibold">✅ Inclus</span>
+                        if (status === 'included') return <span className="text-[#14B8A6] font-semibold">✅ Inclus</span>
                         if (status === 'reduced')  return <span className="text-[#D97706] font-semibold">⚠️ Réduit</span>
                         return <span className="text-[#EF4444] font-semibold">⛔ Exclu</span>
                       }
                       const yearsColor = (status: string) =>
-                        status === 'included' ? 'text-[#2B6B5A]' : status === 'reduced' ? 'text-[#D97706]' : 'text-[#EF4444]'
+                        status === 'included' ? 'text-[#14B8A6]' : status === 'reduced' ? 'text-[#D97706]' : 'text-[#EF4444]'
                       return (
-                        <div className="rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] bg-white dark:bg-[#162534] p-4 space-y-3">
+                        <div className="rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] bg-white dark:bg-[#1E2530] p-4 space-y-3">
                           <p className="text-xs font-semibold text-[#1B3050] dark:text-white uppercase tracking-wide">Actifs du portefeuille</p>
                           <div className="space-y-2">
                             {allAssets.map(a => (
@@ -3427,7 +4123,7 @@ function InvestorProfileSection({
                               </div>
                             ))}
                           </div>
-                          <p className="text-xs text-[#8899AA] border-t border-[#F5F3EF] dark:border-[#1e3347] pt-2">
+                          <p className="text-xs text-[#8899AA] border-t border-[#F5F3EF] dark:border-[#2A3240] pt-2">
                             <strong>Inclus</strong> = pris en compte dans toutes les statistiques. <strong>Réduit</strong> = inclus mais avec moins d&apos;historique, ce qui raccourcit la période d&apos;analyse commune. <strong>Exclu</strong> = moins de {longMode ? '10' : '3'} ans de données, non pris en compte en mode {longMode ? 'mensuel' : 'journalier'} (son poids est redistribué aux autres actifs).
                           </p>
                         </div>
@@ -3491,17 +4187,17 @@ function FormDatePicker({ value, onChange, min, max }: {
   const label = value
     ? new Date(value+'T12:00:00').toLocaleDateString('fr-CH', { day: 'numeric', month: 'long', year: 'numeric' })
     : 'Choisir une date'
-  const BtnCls = 'w-6 h-6 flex items-center justify-center rounded-md hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] text-[#5C6880] transition-colors'
-  const baseCls = 'w-full bg-white dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-lg px-3 py-2 text-sm text-[#1B3050] dark:text-[#E8E4DC] focus:outline-none'
+  const BtnCls = 'w-6 h-6 flex items-center justify-center rounded hover:bg-[#F5F3EF] dark:hover:bg-[#253040] text-[#5C6880] transition-colors'
+  const baseCls = 'w-full bg-white dark:bg-[#1E2530] border border-[#DDD9D1] dark:border-[#323B4A] rounded-sm px-3 py-2 text-sm text-[#1B3050] dark:text-[#E8E4DC] focus:outline-none'
   return (
     <div className="relative" ref={ref}>
       <button type="button" onClick={() => { setOpen(o => !o); setPickerMode(null) }}
-        className={`${baseCls} flex items-center gap-2 text-left transition-colors ${open ? 'ring-2 ring-[#2B6B5A] border-transparent' : ''}`}>
+        className={`${baseCls} flex items-center gap-2 text-left transition-colors ${open ? 'ring-2 ring-[#14B8A6] border-transparent' : ''}`}>
         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-[#9E9A93]"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         <span className={value ? 'text-[#1B3050] dark:text-[#E8E4DC]' : 'text-[#9E9A93]'}>{label}</span>
       </button>
       {open && (
-        <div className="mt-1.5 bg-white dark:bg-[#162534] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-xl shadow-md p-3 w-full select-none">
+        <div className="mt-1.5 bg-white dark:bg-[#1E2530] border border-[#DDD9D1] dark:border-[#323B4A] rounded-sm shadow-md p-3 w-full select-none">
           <div className="flex items-center justify-between mb-2.5">
             {pickerMode === null && (
               <button type="button" onClick={prevMonth} className={BtnCls}>
@@ -3524,11 +4220,11 @@ function FormDatePicker({ value, onChange, min, max }: {
               ) : (
                 <>
                   <button type="button" onClick={() => setPickerMode(m => m === 'month' ? null : 'month')}
-                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${(pickerMode as string) === 'month' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded transition-colors ${(pickerMode as string) === 'month' ? 'bg-[#14B8A6] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#253040]'}`}>
                     {MONTHS_FR[viewMonth]}
                   </button>
                   <button type="button" onClick={() => { setPickerMode(m => m === 'year' ? null : 'year'); setYearPage(Math.floor(viewYear / 12) * 12) }}
-                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${(pickerMode as string) === 'year' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded transition-colors ${(pickerMode as string) === 'year' ? 'bg-[#14B8A6] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#253040]'}`}>
                     {viewYear}
                   </button>
                 </>
@@ -3558,8 +4254,8 @@ function FormDatePicker({ value, onChange, min, max }: {
                   <button type="button" key={i} disabled={allDisabled}
                     onClick={() => { setViewMonth(i); setPickerMode(null) }}
                     className={[
-                      'h-8 rounded-lg text-[11px] font-medium transition-colors',
-                      isActive ? 'bg-[#2B6B5A] text-white' : '',
+                      'h-8 rounded-sm text-[11px] font-medium transition-colors',
+                      isActive ? 'bg-[#14B8A6] text-white' : '',
                       !isActive && !allDisabled ? 'hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
                       allDisabled ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : '',
                     ].join(' ')}>
@@ -3581,8 +4277,8 @@ function FormDatePicker({ value, onChange, min, max }: {
                   <button type="button" key={y} disabled={disabled}
                     onClick={() => { setViewYear(y); setPickerMode(null) }}
                     className={[
-                      'h-8 rounded-lg text-[11px] font-medium transition-colors',
-                      isActive ? 'bg-[#2B6B5A] text-white' : '',
+                      'h-8 rounded-sm text-[11px] font-medium transition-colors',
+                      isActive ? 'bg-[#14B8A6] text-white' : '',
                       !isActive && !disabled ? 'hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
                       disabled ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : '',
                     ].join(' ')}>
@@ -3610,9 +4306,9 @@ function FormDatePicker({ value, onChange, min, max }: {
                       onClick={() => { if (!disabled) { onChange(ds); setOpen(false) } }}
                       className={[
                         'text-center text-[11px] h-7 w-full rounded-full transition-colors leading-none',
-                        isSelected ? 'bg-[#2B6B5A] text-white font-bold' : '',
+                        isSelected ? 'bg-[#14B8A6] text-white font-bold' : '',
                         !isSelected && !disabled ? 'hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
-                        isToday && !isSelected ? 'font-bold text-[#2B6B5A] dark:text-[#7FC5B0]' : '',
+                        isToday && !isSelected ? 'font-bold text-[#14B8A6] dark:text-[#7FC5B0]' : '',
                         disabled ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : 'cursor-pointer',
                       ].join(' ')}>
                       {day}
@@ -3706,20 +4402,20 @@ function DateRangePicker({
     ? `${new Date(dateFrom+'T12:00:00').toLocaleDateString('fr-CH',{day:'numeric',month:'short'})} – ${new Date(dateTo+'T12:00:00').toLocaleDateString('fr-CH',{day:'numeric',month:'short'})}`
     : dateFrom ? `${new Date(dateFrom+'T12:00:00').toLocaleDateString('fr-CH',{day:'numeric',month:'short'})} → …`
     : 'Choisir les dates'
-  const BtnCls = 'w-6 h-6 flex items-center justify-center rounded-md hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] text-[#5C6880] transition-colors'
+  const BtnCls = 'w-6 h-6 flex items-center justify-center rounded hover:bg-[#F5F3EF] dark:hover:bg-[#253040] text-[#5C6880] transition-colors'
   return (
     <div className="relative" ref={ref}>
       <button onClick={() => { setOpen(o => !o); setPickerMode(null) }}
-        className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border transition-colors ${open || (dateFrom && dateTo) ? 'border-[#2B6B5A] bg-[#EEF7F3] dark:bg-[#152920] text-[#2B6B5A]' : 'border-[#DDD9D1] dark:border-[#2a3f52] bg-[#F5F3EF] dark:bg-[#1B2D3E] text-[#5C6880] dark:text-[#9E9A93]'}`}>
+        className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border transition-colors ${open || (dateFrom && dateTo) ? 'border-[#14B8A6] bg-[#EEF7F3] dark:bg-[#152920] text-[#14B8A6]' : 'border-[#DDD9D1] dark:border-[#323B4A] bg-[#F5F3EF] dark:bg-[#1E2530] text-[#5C6880] dark:text-[#9E9A93]'}`}>
         <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
         <span className="font-medium">{label}</span>
         {(dateFrom || dateTo) && (
           <span onClick={e => { e.stopPropagation(); onFromChange(''); onToChange('') }}
-            className="ml-0.5 w-3.5 h-3.5 flex items-center justify-center rounded-full bg-[#2B6B5A] bg-opacity-20 text-[#2B6B5A] hover:bg-opacity-40 text-[9px] leading-none">✕</span>
+            className="ml-0.5 w-3.5 h-3.5 flex items-center justify-center rounded-full bg-[#14B8A6] bg-opacity-20 text-[#14B8A6] hover:bg-opacity-40 text-[9px] leading-none">✕</span>
         )}
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-1.5 z-50 bg-white dark:bg-[#162534] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-xl shadow-xl p-3 w-60 select-none">
+        <div className="absolute top-full left-0 mt-1.5 z-50 bg-white dark:bg-[#1E2530] border border-[#DDD9D1] dark:border-[#323B4A] rounded-sm shadow-xl p-3 w-60 select-none">
           {/* ── Header ── */}
           <div className="flex items-center justify-between mb-2.5">
             {pickerMode === null && (
@@ -3743,11 +4439,11 @@ function DateRangePicker({
               ) : (
                 <>
                   <button onClick={() => setPickerMode(m => m === 'month' ? null : 'month')}
-                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${(pickerMode as string) === 'month' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded transition-colors ${(pickerMode as string) === 'month' ? 'bg-[#14B8A6] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#253040]'}`}>
                     {MONTHS_FR[viewMonth]}
                   </button>
                   <button onClick={() => { setPickerMode(m => m === 'year' ? null : 'year'); setYearPage(Math.floor(viewYear / 12) * 12) }}
-                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded-md transition-colors ${(pickerMode as string) === 'year' ? 'bg-[#2B6B5A] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E]'}`}>
+                    className={`text-xs font-semibold tracking-wide px-1.5 py-0.5 rounded transition-colors ${(pickerMode as string) === 'year' ? 'bg-[#14B8A6] text-white' : 'text-[#1B3050] dark:text-white hover:bg-[#F5F3EF] dark:hover:bg-[#253040]'}`}>
                     {viewYear}
                   </button>
                 </>
@@ -3776,8 +4472,8 @@ function DateRangePicker({
                   <button key={i} disabled={isFuture}
                     onClick={() => { setViewMonth(i); setPickerMode(null) }}
                     className={[
-                      'h-8 rounded-lg text-[11px] font-medium transition-colors',
-                      isActive ? 'bg-[#2B6B5A] text-white' : '',
+                      'h-8 rounded-sm text-[11px] font-medium transition-colors',
+                      isActive ? 'bg-[#14B8A6] text-white' : '',
                       !isActive && !isFuture ? 'hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
                       isFuture ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : '',
                     ].join(' ')}>
@@ -3799,8 +4495,8 @@ function DateRangePicker({
                   <button key={y} disabled={isFuture}
                     onClick={() => { setViewYear(y); setPickerMode(null) }}
                     className={[
-                      'h-8 rounded-lg text-[11px] font-medium transition-colors',
-                      isActive ? 'bg-[#2B6B5A] text-white' : '',
+                      'h-8 rounded-sm text-[11px] font-medium transition-colors',
+                      isActive ? 'bg-[#14B8A6] text-white' : '',
                       !isActive && !isFuture ? 'hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
                       isFuture ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : '',
                     ].join(' ')}>
@@ -3835,12 +4531,12 @@ function DateRangePicker({
                       onClick={() => !disabled && handleDayClick(ds)}
                       className={[
                         'text-center text-[11px] h-7 w-full transition-colors leading-none',
-                        start && end ? 'rounded-full bg-[#2B6B5A] text-white font-bold' : '',
-                        start && !end ? 'rounded-l-full bg-[#2B6B5A] text-white font-bold' : '',
-                        !start && end ? 'rounded-r-full bg-[#2B6B5A] text-white font-bold' : '',
-                        inRange && !start && !end ? 'bg-[#D4EDE6] dark:bg-[#173328] text-[#2B6B5A] dark:text-[#7FC5B0]' : '',
+                        start && end ? 'rounded-full bg-[#14B8A6] text-white font-bold' : '',
+                        start && !end ? 'rounded-l-full bg-[#14B8A6] text-white font-bold' : '',
+                        !start && end ? 'rounded-r-full bg-[#14B8A6] text-white font-bold' : '',
+                        inRange && !start && !end ? 'bg-[#D4EDE6] dark:bg-[#173328] text-[#14B8A6] dark:text-[#7FC5B0]' : '',
                         !start && !end && !inRange && !disabled ? 'rounded-full hover:bg-[#EEF7F3] dark:hover:bg-[#1a2d26] text-[#1B3050] dark:text-[#E8E4DC]' : '',
-                        isToday && !start && !end ? 'font-bold text-[#2B6B5A] dark:text-[#7FC5B0]' : '',
+                        isToday && !start && !end ? 'font-bold text-[#14B8A6] dark:text-[#7FC5B0]' : '',
                         disabled ? 'text-[#D0CBC2] dark:text-[#2e3f4f] cursor-not-allowed' : 'cursor-pointer',
                       ].join(' ')}>
                       {day}
@@ -3851,7 +4547,7 @@ function DateRangePicker({
             </>
           )}
 
-          <div className="mt-2 pt-2 border-t border-[#EDE9E1] dark:border-[#1e3245]">
+          <div className="mt-2 pt-2 border-t border-[#EDE9E1] dark:border-[#2A3240]">
             <p className="text-[9px] text-[#9E9A93] text-center leading-tight">
               {!dateFrom ? 'Cliquez pour choisir le début' : !dateTo ? 'Cliquez pour choisir la fin (max 60 jours)' : `${Math.round((new Date(dateTo+'T12:00:00').getTime()-new Date(dateFrom+'T12:00:00').getTime())/86400000)+1} jours sélectionnés`}
             </p>
@@ -3865,13 +4561,97 @@ function DateRangePicker({
 export default function PortfolioPage() {
   const [positions, setPositions] = useState<Position[]>([])
   const [activeTab, setActiveTab] = useState<'positions' | 'analyse' | 'cloturees'>('positions')
+  const [allocTab, setAllocTab] = useState<'positions' | 'categorie'>('categorie')
   const [chartMode, setChartMode] = useState<'evol' | 'pnl' | 'drawdown'>('evol')
   const [chartRange, setChartRange] = useState<'all' | '60d' | 'weekly'>('all')
   const [chartDateFrom, setChartDateFrom] = useState('')
   const [chartDateTo, setChartDateTo] = useState('')
   const [chartBustKey, setChartBustKey] = useState(0)
+  const [timePeriod, setTimePeriod] = useState<'1D' | '1W' | '1M' | 'YTD' | '1Y' | 'Max'>('Max')
+  const [chartInterval, setChartInterval] = useState<'1day' | '1h' | '4h' | '5min'>('1day')
+  const [chartDownsample, setChartDownsample] = useState(1)
   const [maxDrawdown, setMaxDrawdown] = useState<{ pct: number; date: string } | null>(null)
   const [dailyMaxDrawdown, setDailyMaxDrawdown] = useState<{ pct: number; peakDate: string; date: string } | null>(null)
+
+  // ── helper : convert timePeriod button → range + dateFrom ──────────────
+  const applyTimePeriod = (p: '1D' | '1W' | '1M' | 'YTD' | '1Y' | 'Max') => {
+    setTimePeriod(p)
+    const today = new Date()
+    const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    if (p === 'Max') {
+      // Intervalle adaptatif selon la durée du portefeuille
+      const sorted = positionsCalc.filter(q => q.quantite > 0).sort((a, b) => new Date(a.dateAchat).getTime() - new Date(b.dateAchat).getTime())
+      const firstDate = sorted[0]?.dateAchat
+      if (firstDate) {
+        const spanDays = (today.getTime() - new Date(firstDate).getTime()) / (1000 * 3600 * 24)
+        if (spanDays < 1) {
+          // < 1 jour → 5min, pas de downsample
+          setChartRange('60d'); setChartInterval('5min')
+          setChartDateFrom(fmt(today)); setChartDateTo(fmt(today))
+          setChartDownsample(1)
+        } else if (spanDays < 7) {
+          // 1j–1 semaine → 1h, pas de downsample
+          setChartRange('60d'); setChartInterval('1h')
+          setChartDateFrom(firstDate); setChartDateTo(fmt(today))
+          setChartDownsample(1)
+        } else if (spanDays < 30) {
+          // 1 semaine–1 mois → 4h
+          setChartRange('60d'); setChartInterval('4h')
+          setChartDateFrom(firstDate); setChartDateTo(fmt(today))
+          setChartDownsample(1)
+        } else if (spanDays < 365) {
+          // 1 mois–1 an → 1day sans downsample
+          setChartRange('60d'); setChartInterval('1day')
+          setChartDateFrom(firstDate); setChartDateTo(fmt(today))
+          setChartDownsample(1)
+        } else {
+          // > 1 an → 1day avec downsample selon les années (2j/1an, 3j/2ans, ...)
+          const years = Math.floor(spanDays / 365)
+          setChartRange('60d'); setChartInterval('1day')
+          setChartDateFrom(firstDate); setChartDateTo(fmt(today))
+          setChartDownsample(years + 1)
+        }
+      } else {
+        setChartRange('60d'); setChartInterval('1day')
+        setChartDateFrom(''); setChartDateTo(fmt(today))
+        setChartDownsample(1)
+      }
+    } else if (p === '1D') {
+      // 5min : aujourd'hui seulement (de minuit à maintenant), prémarket inclus si dispo
+      setChartRange('60d'); setChartInterval('5min')
+      setChartDateFrom(fmt(today)); setChartDateTo(fmt(today))
+      setChartDownsample(1)
+    } else if (p === '1W') {
+      // 1h : 7 derniers jours calendaires, prémarket inclus
+      const d = new Date(today); d.setDate(d.getDate() - 7)
+      setChartRange('60d'); setChartInterval('1h')
+      setChartDateFrom(fmt(d)); setChartDateTo(fmt(today))
+      setChartDownsample(1)
+    } else if (p === '1M') {
+      // 4h : dernier mois calendaire
+      const d = new Date(today); d.setMonth(d.getMonth() - 1)
+      setChartRange('60d'); setChartInterval('4h')
+      setChartDateFrom(fmt(d)); setChartDateTo(fmt(today))
+      setChartDownsample(1)
+    } else if (p === 'YTD') {
+      // 1day : depuis le 1er janvier de l'année civile
+      const d = new Date(today.getFullYear(), 0, 1)
+      setChartRange('60d'); setChartInterval('1day')
+      setChartDateFrom(fmt(d)); setChartDateTo(fmt(today))
+      setChartDownsample(1)
+    } else if (p === '1Y') {
+      // 1day : dernière année calendaire
+      const d = new Date(today); d.setFullYear(d.getFullYear() - 1)
+      setChartRange('60d'); setChartInterval('1day')
+      setChartDateFrom(fmt(d)); setChartDateTo(fmt(today))
+      setChartDownsample(1)
+    }
+  }
+  // Re-apply time period on mount — handles HMR state preservation (Next.js hot reload)
+  // When code changes, React preserves state, so chartDateFrom may reflect an old period.
+  const maxInitDone = useRef(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (timePeriod !== 'Max') applyTimePeriod(timePeriod) }, [])
   const [dailyMDDLoading, setDailyMDDLoading] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
@@ -3899,6 +4679,8 @@ export default function PortfolioPage() {
   const [quantiteError, setQuantiteError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
+  // Prix temps réel (fetchPriceCached) pour la section positions
+  const [livePricesMap, setLivePricesMap] = useState<Map<string, { price: number; fxRate: number }>>(new Map())
   const [fetchingModal, setFetchingModal] = useState(false)
   const [fetchModalError, setFetchModalError] = useState<string | null>(null)
   const [fetchingAchat, setFetchingAchat] = useState(false)
@@ -3918,10 +4700,10 @@ export default function PortfolioPage() {
   const CATEGORY_TYPES: Record<string, string[]> = {
     'Actions':            ['EQUITY'],
     'ETF':                ['ETF'],
-    'ETF Oblig.':        ['ETF', 'MUTUALFUND', 'BOND'],
+    'Fonds':              ['ETF', 'MUTUALFUND', 'BOND'],
     'Matières premières': ['FUTURE'],
     'Crypto':             ['CRYPTOCURRENCY'],
-    'Monnaies':           ['CURRENCY'],
+    'Forex':              ['CURRENCY', 'COMMODITY'],
     'Tout':               [], // pas de filtre
   }
 
@@ -4024,27 +4806,76 @@ export default function PortfolioPage() {
     [positions, todayStr]
   )
 
-  // ── Refresh global ──────────────────────────────────────────────────────────
+  // ── Refresh global — 1 seul appel batch /api/history au lieu de N appels /api/prices ──
   async function refreshPrices() {
     setRefreshing(true); setRefreshError(null)
-    const results = await Promise.allSettled(currentPositions.map(async (p) => {
-      if (!p.ticker.trim()) return p
-      const res = await fetch(`/api/prices?ticker=${encodeURIComponent(p.ticker)}&devise=${p.devise}`)
-      if (!res.ok) return p
-      const data = await res.json()
-      return { ...p, ...(data.price != null ? { prixActuel: data.price } : {}), ...(data.fxRate != null ? { tauxActuelCHF: data.fxRate } : {}), derniereMaj: new Date().toISOString() }
-    }))
-    const updated = results.map((r, i) => r.status === 'fulfilled' ? r.value : currentPositions[i])
-    // Merge updated current positions back into full positions list (preserve closed ones)
-    const updatedIds = new Set(updated.map(p => p.id))
-    setPositions(ps => ps.map(p => updatedIds.has(p.id) ? updated.find(u => u.id === p.id)! : p))
+    const active = currentPositions.filter(p => p.ticker.trim())
+    if (active.length === 0) { setRefreshing(false); return }
+
+    // Collecte les tickers uniques + paires FX nécessaires
+    const tickerSet = new Set<string>()
+    active.forEach(p => {
+      tickerSet.add(p.ticker.trim().toUpperCase())
+      if (p.devise !== 'CHF') tickerSet.add(`${p.devise}CHF=X`)
+    })
+    const tickersStr = Array.from(tickerSet).join(',')
+
+    let histData: Record<string, { dates: string[]; closes: number[] }> = {}
+    let fetchOk = true
+    try {
+      // Un seul appel batch — bust=1 pour forcer le rafraîchissement
+      const res = await fetch(`/api/history?tickers=${encodeURIComponent(tickersStr)}&interval=1day&bust=1`)
+      if (res.ok) {
+        histData = await res.json()
+        // Met à jour le cache client pour que les charts profitent immédiatement des données fraîches
+        historyCache.set(tickersStr + ':1day', histData)
+        historyInProgress.delete(tickersStr + ':1day')
+      } else fetchOk = false
+    } catch { fetchOk = false }
+
+    if (!fetchOk) {
+      setRefreshError('Impossible de récupérer les prix.'); setRefreshing(false); return
+    }
+
+    // Récupère les taux FX manquants via /api/prices (fallback si le batch history ne les a pas)
+    const nonChfDevises = [...new Set(active.filter(p => p.devise !== 'CHF').map(p => p.devise))]
+    const missingFxDevises = nonChfDevises.filter(dev => {
+      const hFx = histData[`${dev}CHF=X`]
+      return !hFx || hFx.closes.length === 0
+    })
+    const fallbackFxRates = new Map<string, number>()
+    if (missingFxDevises.length > 0) {
+      await Promise.all(missingFxDevises.map(async dev => {
+        try {
+          const res = await fetch(`/api/prices?ticker=${encodeURIComponent(dev + '/CHF')}&devise=CHF`)
+          if (res.ok) { const d = await res.json(); if (d.price != null) fallbackFxRates.set(dev, d.price) }
+        } catch {}
+      }))
+    }
+
+    let errCount = 0
+    const updated = active.map(p => {
+      const key = p.ticker.trim().toUpperCase()
+      const h = histData[key]
+      const fxKey = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
+      const hFx = fxKey ? histData[fxKey.toUpperCase()] : null
+      if (!h || h.closes.length === 0) { errCount++; return p }
+      const prixActuel = h.closes[h.closes.length - 1]
+      const fxRate = hFx && hFx.closes.length > 0
+        ? hFx.closes[hFx.closes.length - 1]
+        : (p.devise !== 'CHF' ? (fallbackFxRates.get(p.devise) ?? p.tauxActuelCHF) : 1)
+      return { ...p, prixActuel, tauxActuelCHF: fxRate, derniereMaj: new Date().toISOString() }
+    })
+
+    // Fusionne les positions mises à jour dans la liste complète (préserve les positions fermées)
+    const updatedMap = new Map(updated.map(p => [p.id, p]))
+    setPositions(ps => ps.map(p => updatedMap.has(p.id) ? updatedMap.get(p.id)! : p))
     if (userId) {
       const supabase = createClient()
       await Promise.all(updated.map(p => supabase.from('portfolio_positions').update({
         prix_actuel: p.prixActuel, taux_actuel_chf: p.tauxActuelCHF, derniere_maj: p.derniereMaj ?? null,
       }).eq('id', p.id).eq('user_id', userId)))
     }
-    const errCount = results.filter(r => r.status === 'rejected').length
     if (errCount > 0) setRefreshError(`${errCount} position(s) non mises à jour.`)
     setRefreshing(false)
   }
@@ -4054,9 +4885,8 @@ export default function PortfolioPage() {
     if (!ticker.trim()) return
     setFetchingModal(true); setFetchModalError(null)
     try {
-      const res = await fetch(`/api/prices?ticker=${encodeURIComponent(ticker)}&devise=${devise}`)
-      const data = await res.json()
-      if (data.price != null) setForm(f => ({ ...f, prixActuel: data.price, tauxActuelCHF: data.fxRate ?? 1 }))
+      const data = await fetchPriceCached(ticker, devise, undefined)
+      if (data?.price != null) setForm(f => ({ ...f, prixActuel: data.price, tauxActuelCHF: data.fxRate ?? 1 }))
     } catch {}
     finally { setFetchingModal(false) }
   }
@@ -4067,18 +4897,33 @@ export default function PortfolioPage() {
     setFetchingAchat(true); setFetchModalError(null)
     try {
       const today = new Date().toISOString().slice(0, 10)
-      // Si date = aujourd'hui ou future : utiliser prix temps réel (historique Yahoo non dispo)
-      const url = date >= today
-        ? `/api/prices?ticker=${encodeURIComponent(ticker)}&devise=${devise}`
-        : `/api/prices?ticker=${encodeURIComponent(ticker)}&devise=${devise}&date=${date}`
-      const res = await fetch(url)
-      const data = await res.json()
-      if (data.price != null) setForm(f => ({ ...f, prixAchat: data.price, tauxAchatCHF: data.fxRate ?? 1 }))
+      const dateParam = date >= today ? undefined : date
+      const data = await fetchPriceCached(ticker, devise, dateParam)
+      if (data?.price != null) setForm(f => ({ ...f, prixAchat: data.price, tauxAchatCHF: data.fxRate ?? 1 }))
     } catch {}
     finally { setFetchingAchat(false) }
   }
 
   // ── Calculs ─────────────────────────────────────────────────────────────────
+  // ── Auto-fetch prix live pour la section positions ─────────────────────────
+  useEffect(() => {
+    const activeLongs = currentPositions.filter(p => p.quantite > 0 && !p.dateVente)
+    if (activeLongs.length === 0) return
+    let cancelled = false
+    ;(async () => {
+      const entries = await Promise.all(activeLongs.map(async p => {
+        const d = await fetchPriceCached(p.ticker, p.devise, undefined)
+        return { key: `${p.ticker.toUpperCase()}|${p.devise}`, data: d }
+      }))
+      if (cancelled) return
+      const map = new Map<string, { price: number; fxRate: number }>()
+      for (const e of entries) { if (e.data) map.set(e.key, e.data) }
+      setLivePricesMap(map)
+    })()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPositions.map(p => p.id + p.quantite).join(',')])
+
   const positionsCalc: PositionCalc[] = useMemo(() => currentPositions.map(p => {
     // Pour les ventes (quantite < 0, prixVente renseigné) :
     //   cout  = |qty| × prixAchat × tauxAchat       (positif : ce qu'on a payé à l'achat)
@@ -4086,27 +4931,41 @@ export default function PortfolioPage() {
     //   gain  = valeur − cout                        (réalisé, positif si profitable)
     const absQty = Math.abs(p.quantite)
     const isSale = p.quantite < 0 && p.prixVente != null
+    // Prix live si disponible (fetchPriceCached), sinon prixActuel stocké
+    const liveKey = `${p.ticker.toUpperCase()}|${p.devise}`
+    const live = livePricesMap.get(liveKey)
+    const prixLive = live?.price ?? p.prixActuel
+    const tauxLive = live?.fxRate ?? p.tauxActuelCHF
     const coutCHF = isSale
       ? absQty * p.prixAchat * p.tauxAchatCHF
       : p.quantite * p.prixAchat * p.tauxAchatCHF
     const valeurCHF = isSale
       ? absQty * p.prixVente! * (p.tauxVenteCHF ?? p.tauxAchatCHF)
-      : p.quantite * p.prixActuel * p.tauxActuelCHF
+      : p.quantite * prixLive * tauxLive
     const gainCHF = valeurCHF - coutCHF
     const gainPctCHF = coutCHF > 0 ? (gainCHF / coutCHF) * 100 : 0
     const gainDevise = isSale
       ? absQty * (p.prixVente! - p.prixAchat)
-      : p.quantite * (p.prixActuel - p.prixAchat)
-    const gainPctDevise = p.prixAchat > 0 ? ((p.prixActuel - p.prixAchat) / p.prixAchat) * 100 : 0
+      : p.quantite * (prixLive - p.prixAchat)
+    const gainPctDevise = p.prixAchat > 0 ? ((prixLive - p.prixAchat) / p.prixAchat) * 100 : 0
     const impactFX = p.devise === 'CHF' ? 0
       : isSale
         ? absQty * p.prixVente! * ((p.tauxVenteCHF ?? p.tauxAchatCHF) - p.tauxAchatCHF)
-        : p.quantite * p.prixActuel * (p.tauxActuelCHF - p.tauxAchatCHF)
+        : p.quantite * prixLive * (tauxLive - p.tauxAchatCHF)
     const inflation = inflationCumulee(p.dateAchat)
     const gainReel = gainCHF - coutCHF * inflation
     const gainPctReel = coutCHF > 0 ? (gainReel / coutCHF) * 100 : 0
-    return { ...p, coutCHF, valeurCHF, gainCHF, gainPctCHF, gainDevise, gainPctDevise, impactFX, gainReel, gainPctReel }
-  }), [currentPositions])
+    return { ...p, prixActuel: isSale ? p.prixActuel : prixLive, tauxActuelCHF: isSale ? p.tauxActuelCHF : tauxLive, coutCHF, valeurCHF, gainCHF, gainPctCHF, gainDevise, gainPctDevise, impactFX, gainReel, gainPctReel }
+  }), [currentPositions, livePricesMap])
+
+  // Fix F5 reload: applyTimePeriod('Max') needs positionsCalc (defined above).
+  // Fires when positionsCalc first becomes non-empty (positions loaded from Supabase).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (timePeriod !== 'Max' || positionsCalc.length === 0 || maxInitDone.current) return
+    maxInitDone.current = true
+    applyTimePeriod('Max')
+  }, [positionsCalc.length])
 
   const totals = useMemo(() => {
     // Regrouper par ticker pour appliquer la même logique FIFO que l'onglet Positions
@@ -4208,12 +5067,17 @@ export default function PortfolioPage() {
     setSliceGroupTotal(groupTotal)
     setGroupHasSlices(hasSlices)
     setSlicePrixVenteRaw(''); setSlicePrixVente(undefined); setSliceHistoPrice(null)
-    // Charger la première date dispo de l'historique du ticker
+    // Charger la première date dispo de l'historique du ticker (cache-first)
     setFormTickerMinDate(undefined)
-    fetchHistory(p.ticker).then(raw => {
-      const hist = raw[p.ticker] as { dates?: string[] } | undefined
-      if (hist?.dates && hist.dates.length > 0) setFormTickerMinDate(hist.dates[0])
-    }).catch(() => {})
+    const cached = getMinDateFromCache(p.ticker)
+    if (cached) {
+      setFormTickerMinDate(cached)
+    } else {
+      fetchHistory(p.ticker).then(raw => {
+        const hist = raw[p.ticker] as { dates?: string[] } | undefined
+        if (hist?.dates && hist.dates.length > 0) setFormTickerMinDate(hist.dates[0])
+      }).catch(() => {})
+    }
     setShowModal(true)
   }
 
@@ -4394,15 +5258,15 @@ export default function PortfolioPage() {
   const fld = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [k]: e.target.type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value }))
 
-  const clr = (n: number) => n >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'
+  const clr = (n: number) => n >= 0 ? 'text-[#14B8A6]' : 'text-red-500'
   const pct = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
   const chf = (n: number) => n.toLocaleString('fr-CH', { maximumFractionDigits: 0 }) + ' CHF'
   const isEmpty = currentPositions.length === 0
   const lastMaj = currentPositions.map(p => p.derniereMaj).filter(Boolean).sort().pop()
 
-  const inputCls = `w-full bg-white dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52]
-    rounded-lg px-3 py-2 text-sm text-[#1B3050] dark:text-[#E8E4DC]
-    focus:outline-none focus:ring-2 focus:ring-[#2B6B5A] focus:border-transparent placeholder-[#9E9A93]`
+  const inputCls = `w-full bg-white dark:bg-[#1E2530] border border-[#DDD9D1] dark:border-[#323B4A]
+    rounded-sm px-3 py-2 text-sm text-[#1B3050] dark:text-[#E8E4DC]
+    focus:outline-none focus:ring-2 focus:ring-[#14B8A6] focus:border-transparent placeholder-[#9E9A93]`
 
   // ── Drawdown max journalier — méthode VLU (Time-Weighted Return) ───────────
   const _positionsKey = positionsCalc.map(p => p.ticker + '|' + p.dateAchat + '|' + p.quantite).join(',')
@@ -4540,10 +5404,10 @@ export default function PortfolioPage() {
 
 
   return (
-    <div className="min-h-screen bg-[#F5F3EF] dark:bg-[#0F1E2C] text-[#1B3050] dark:text-[#E8E4DC]">
+    <div className="min-h-screen bg-[#F5F3EF] dark:bg-[#181C22] text-[#1B3050] dark:text-[#E8E4DC]">
       <Header />
 
-      <div className="max-w-6xl mx-auto px-4 py-10">
+      <div className="w-full max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-10 xl:px-16 py-10">
         <div className="mb-8">
           <div className="flex flex-wrap items-center gap-3 mb-1">
             <h1 className="text-2xl font-bold tracking-tight">Mon portfolio</h1>
@@ -4556,299 +5420,130 @@ export default function PortfolioPage() {
               {' '}· Données Twelve Data (délai ~15 min)
             </p>
           )}
-          <div className="flex flex-wrap gap-2 mt-4">
-            {!isEmpty && (
-              <>
-                <button onClick={exportCSV}
-                  className="border border-[#DDD9D1] dark:border-[#2a3f52] text-[#5C6880] text-sm font-medium px-4 py-2 rounded-lg hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] transition-colors flex items-center gap-2">
-                  ↓ Export CSV
-                </button>
-                <button onClick={refreshPrices} disabled={refreshing}
-                  className="border border-[#2B6B5A] text-[#2B6B5A] text-sm font-medium px-4 py-2 rounded-lg hover:bg-[#2B6B5A]/10 disabled:opacity-40 transition-colors flex items-center gap-2">
-                  <span className={refreshing ? 'animate-spin inline-block' : ''}>⟳</span>
-                  {refreshing ? 'Mise à jour…' : 'Rafraîchir les prix'}
-                </button>
-              </>
-            )}
-            <button onClick={openAdd} className="bg-[#2B6B5A] hover:bg-[#225549] text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-              + Ajouter
-            </button>
-          </div>
+
         </div>
 
         {refreshError && (
-          <div className="mb-4 px-4 py-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg text-sm text-amber-700 dark:text-amber-400 flex items-center justify-between">
+          <div className="mb-4 px-4 py-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-sm text-sm text-amber-700 dark:text-amber-400 flex items-center justify-between">
             <span>⚠️ {refreshError}</span>
             <button onClick={() => setRefreshError(null)} className="ml-4 text-amber-400 hover:text-amber-600">×</button>
           </div>
         )}
 
         {isEmpty ? (
-          <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-16 text-center">
+          <div className="bg-white dark:bg-[#1E2530] rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] p-16 text-center">
             <div className="text-5xl mb-4">📈</div>
             <h2 className="text-lg font-semibold mb-2">Commencez à suivre votre portefeuille</h2>
             <p className="text-[#5C6880] text-sm mb-6 max-w-sm mx-auto">
               Recherchez un actif par nom ou ticker — les prix et taux de change sont récupérés automatiquement.
             </p>
-            <button onClick={openAdd} className="bg-[#2B6B5A] hover:bg-[#225549] text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors">
+            <button onClick={openAdd} className="bg-[#14B8A6] hover:bg-[#225549] text-white text-sm font-medium px-5 py-2.5 rounded-sm transition-colors">
               + Ajouter ma première position
             </button>
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
-              <div className="lg:col-span-1 flex flex-col gap-4">
-                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5 flex-1">
-                  <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider mb-1">Valeur totale</p>
-                  <p className="text-2xl font-bold font-mono" style={{ fontVariantNumeric: 'tabular-nums' }}>{chf(totals.valeurTotal)}</p>
-                  <p className="text-xs text-[#9E9A93] mt-0.5">Investi: {chf(totals.coutTotal)}</p>
-                </div>
-                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5 flex-1">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider">Gain nominal CHF</p>
-                    <div className="relative group">
-                      <span className="w-4 h-4 rounded-full bg-[#DDD9D1] dark:bg-[#2a3f52] text-[#5C6880] text-[10px] font-bold flex items-center justify-center cursor-default select-none">?</span>
-                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 z-50 hidden group-hover:block pointer-events-none">
-                        <div className="bg-[#1B3050] dark:bg-[#0F1E2C] text-white text-xs rounded-xl p-3 shadow-xl space-y-2">
-                          <p className="font-semibold text-white/90">Gain nominal en CHF</p>
-                          <p className="text-white/70 leading-relaxed">Différence entre la valeur actuelle et le coût d'achat, convertie en CHF au taux actuel. Reflète uniquement l'évolution du prix et l'effet du taux de change — dividendes non inclus.</p>
-                          <div className="border-t border-white/20 pt-2">
-                            <p className="text-white/60 text-[11px] mb-1">Dont impact taux de change :</p>
-                            <p className={`font-mono font-semibold ${totals.fxTotal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                              {totals.fxTotal >= 0 ? '+' : ''}{chf(totals.fxTotal)}{' '}
-                              <span className="text-[11px] opacity-80">({(() => { const base = totals.gainTotal - totals.fxTotal; return base !== 0 ? (totals.fxTotal / Math.abs(base) * 100).toFixed(2) : '0.00' })()} %)</span>
-                            </p>
-                          </div>
-                          <div className="w-2 h-2 bg-[#1B3050] dark:bg-[#0F1E2C] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <p className={`text-xl font-bold font-mono ${clr(totals.gainTotal)}`}>{totals.gainTotal >= 0 ? '+' : ''}{chf(totals.gainTotal)}</p>
-                  <p className={`text-sm font-mono ${clr(totals.gainPct)}`}>{pct(totals.gainPct)}</p>
-                </div>
-                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5 flex-1">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider">Gain réel</p>
-                    <div className="relative group">
-                      <span className="w-4 h-4 rounded-full bg-[#DDD9D1] dark:bg-[#2a3f52] text-[#5C6880] text-[10px] font-bold flex items-center justify-center cursor-default select-none">?</span>
-                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 z-50 hidden group-hover:block pointer-events-none">
-                        <div className="bg-[#1B3050] dark:bg-[#0F1E2C] text-white text-xs rounded-xl p-3 shadow-xl space-y-2">
-                          <p className="font-semibold text-white/90">Gain réel après inflation</p>
-                          <p className="text-white/70 leading-relaxed">Gain nominal diminué de l'érosion inflationniste (CPI suisse OFS) depuis la date d'achat. Reflète le vrai pouvoir d'achat gagné ou perdu — dividendes non inclus.</p>
-                          <div className="border-t border-white/20 pt-2 space-y-1">
-                            <p className="text-white/60 text-[11px]">Dont érosion par l'inflation :</p>
-                            <p className="font-mono font-semibold text-orange-400">
-                              -{chf(totals.inflationErosionTotal)}{' '}
-                              <span className="text-[11px] opacity-80">({totals.gainTotal !== 0 ? (totals.inflationErosionTotal / Math.abs(totals.gainTotal) * 100).toFixed(2) : '0.00'} %)</span>
-                            </p>
-                          </div>
-                          <div className="w-2 h-2 bg-[#1B3050] dark:bg-[#0F1E2C] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <p className={`text-xl font-bold font-mono ${clr(totals.gainReelTotal)}`}>{totals.gainReelTotal >= 0 ? '+' : ''}{chf(totals.gainReelTotal)}</p>
-                  <p className={`text-sm font-mono ${clr(totals.gainReelPct)}`}>{pct(totals.gainReelPct)}</p>
-                </div>
-                {(() => {
-                  return (
-                    <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5 flex-1">
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider">Gains réalisés</p>
-                        <div className="relative group">
-                          <span className="w-4 h-4 rounded-full bg-[#DDD9D1] dark:bg-[#2a3f52] text-[#5C6880] text-[10px] font-bold flex items-center justify-center cursor-default select-none">?</span>
-                          <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-72 z-50 hidden group-hover:block pointer-events-none">
-                            <div className="bg-[#1B3050] dark:bg-[#0F1E2C] text-white text-xs rounded-xl p-3 shadow-xl space-y-2">
-                              <p className="font-semibold text-white/90">Gains réalisés</p>
-                              <p className="text-white/70 leading-relaxed">Gain ou perte sur les positions clôturées ou réduites, calculé au prix effectif de vente, converti en CHF.</p>
-                              <div className="w-2 h-2 bg-[#1B3050] dark:bg-[#0F1E2C] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <p className={`text-xl font-bold font-mono ${gainVente >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>{gainVente >= 0 ? '+' : ''}{chf(gainVente)}</p>
-                    </div>
-                  )
-                })()}
-                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5 flex-1">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <p className="text-xs font-semibold text-[#5C6880] uppercase tracking-wider">Drawdown max</p>
-                    <div className="relative group">
-                      <span className="w-4 h-4 rounded-full bg-[#DDD9D1] dark:bg-[#2a3f52] text-[#5C6880] text-[10px] font-bold flex items-center justify-center cursor-default select-none">?</span>
-                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 z-50 hidden group-hover:block pointer-events-none">
-                        <div className="bg-[#1B3050] dark:bg-[#0F1E2C] text-white text-xs rounded-xl p-3 shadow-xl space-y-2">
-                          <p className="font-semibold text-white/90">Drawdown maximum historique</p>
-                          <p className="text-white/70 leading-relaxed">Recul le plus important entre un pic de valeur et le creux suivant, calculé jour par jour depuis le premier achat.</p>
-                          <div className="border-t border-white/20 pt-2">
-                            <p className="text-white/60 text-[11px] leading-relaxed">⚠️ Cette valeur peut différer du graphique Drawdown : elle utilise toutes les données journalières, alors que le graphique peut être en vue &quot;Mois&quot; ou &quot;Sem&quot; et ne capturer qu&apos;une partie des creux intermédiaires.</p>
-                          </div>
-                          <div className="w-2 h-2 bg-[#1B3050] dark:bg-[#0F1E2C] rotate-45 absolute left-1/2 -translate-x-1/2 -bottom-1"></div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  {dailyMDDLoading ? (
-                    <p className="text-sm text-[#9E9A93]">Calcul…</p>
-                  ) : dailyMaxDrawdown ? (
-                    <>
-                      <p className="text-xl font-bold font-mono text-[#DC2626]">{dailyMaxDrawdown.pct.toFixed(2)} %</p>
-                      <p className="text-sm font-mono text-[#9E9A93]">{dailyMaxDrawdown.peakDate.split('-').reverse().join('/')} → {dailyMaxDrawdown.date.split('-').reverse().join('/')}</p>
-                    </>
-                  ) : (
-                    <p className="text-xl font-bold font-mono text-[#2B6B5A]">—</p>
-                  )}
-                </div>
-              </div>
-
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
+              {/* ── LEFT: Portfolio chart + Positions ── */}
               <div className="lg:col-span-2 flex flex-col gap-4">
-                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5 flex-1">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-sm font-semibold">
-                      {chartMode === 'evol' ? 'Évolution du portefeuille' : chartMode === 'pnl' ? 'PnL cumulé' : 'Drawdown'}
-                    </h3>
-                    <div className="flex items-center gap-2">
-                      <div className="flex bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-0.5 gap-0.5 mr-1">
-                        {(['all', 'weekly', '60d'] as const).map(r => (
-                          <button key={r} onClick={() => { setChartRange(r); if (r !== '60d') { setChartDateFrom(''); setChartDateTo('') } }}
-                            className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${chartRange === r ? 'bg-white dark:bg-[#162534] text-[#1B3050] dark:text-white shadow-sm' : 'text-[#9E9A93] hover:text-[#5C6880]'}`}>
-                            {r === 'all' ? 'Mois' : r === 'weekly' ? 'Sem' : 'Jours'}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="flex bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-0.5 gap-0.5">
-                        {(['evol', 'pnl', 'drawdown'] as const).map(m => (
-                          <button key={m} onClick={() => setChartMode(m)}
-                            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${chartMode === m ? 'bg-white dark:bg-[#162534] text-[#1B3050] dark:text-white shadow-sm' : 'text-[#9E9A93] hover:text-[#5C6880]'}`}>
-                            {m === 'evol' ? 'Évolution' : m === 'pnl' ? 'PnL' : 'Drawdown'}
-                          </button>
-                        ))}
-                      </div>
-                      <button onClick={() => setChartBustKey(k => k + 1)} title="Rafraîchir les données historiques"
-                        className="p-1.5 rounded-lg text-[#9E9A93] hover:text-[#5C6880] hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] transition-colors" aria-label="Rafraîchir">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+
+                <div className="bg-white dark:bg-[#1E2530] rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] overflow-hidden">
+
+                  {/* ── Portfolio title row ── */}
+                  <div className="flex items-center justify-between px-5 pt-4 pb-0">
+                    <h2 className="text-base font-bold text-[#1B3050] dark:text-white tracking-tight">Portfolio</h2>
+                    <button onClick={openAdd}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-sm bg-[#1B3050] dark:bg-white/10 text-white text-xs font-semibold hover:bg-[#243f65] dark:hover:bg-white/20 transition-colors">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                      Ajouter une position
+                    </button>
+                  </div>
+                  {/* ── Chart header: getquin-style tabs + time filters ── */}
+                  <div className="flex items-center justify-between px-5 pt-3 pb-0">
+                    {/* Chart type tabs (left) — styled like getquin account tabs */}
+                    <div className="flex items-center">
+                      {(['evol', 'pnl', 'drawdown'] as const).map(m => (
+                        <button
+                          key={m}
+                          onClick={() => setChartMode(m)}
+                          className={`relative px-3 py-2 text-sm font-semibold transition-colors mr-1
+                            ${chartMode === m
+                              ? 'text-[#1B3050] dark:text-white'
+                              : 'text-[#9E9A93] hover:text-[#5C6880] dark:hover:text-white/70'
+                            }`}
+                        >
+                          {m === 'evol' ? 'Évolution' : m === 'pnl' ? 'PnL' : 'Drawdown'}
+                          {chartMode === m && (
+                            <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1B3050] dark:bg-white rounded-full" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                    {/* Time period filters (right) — like getquin 1J 1S 1M YTD 1A Max */}
+                    <div className="flex items-center gap-0.5">
+                      {(['1D', '1W', '1M', 'YTD', '1Y', 'Max'] as const).map(p => (
+                        <button
+                          key={p}
+                          onClick={() => applyTimePeriod(p)}
+                          className={`px-2 py-1 rounded text-xs font-semibold transition-colors
+                            ${timePeriod === p
+                              ? 'bg-[#1B3050] dark:bg-white/10 text-white dark:text-white'
+                              : 'text-[#9E9A93] hover:text-[#5C6880] dark:hover:text-white/70 hover:bg-[#F5F3EF] dark:hover:bg-[#253040]'
+                            }`}
+                        >
+                          {p === '1D' ? '1J' : p === '1W' ? '1S' : p === '1Y' ? '1A' : p}
+                        </button>
+                      ))}
+                      <button onClick={() => { refreshPrices(); setChartBustKey(k => k + 1) }} disabled={refreshing} title="Rafraîchir les prix et données historiques"
+                        className={`p-1.5 ml-1 rounded-sm hover:text-[#5C6880] hover:bg-[#F5F3EF] dark:hover:bg-[#253040] transition-colors ${refreshing ? 'opacity-50 cursor-not-allowed text-[#5C6880]' : 'text-[#9E9A93]'}`} aria-label="Rafraîchir">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={refreshing ? 'animate-spin' : ''}><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
                       </button>
                     </div>
                   </div>
-                  {chartRange === '60d' && (
-                    <div className="flex items-center mt-2">
-                      <DateRangePicker
-                        dateFrom={chartDateFrom}
-                        dateTo={chartDateTo}
-                        onFromChange={setChartDateFrom}
-                        onToChange={setChartDateTo}
-                      />
-                    </div>
-                  )}
-                  {chartMode === 'evol' && <EvolChart data={positionsCalc} showFX={true} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
-                  {chartMode === 'pnl' && <PnLChart data={positionsCalc} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
-                  {chartMode === 'drawdown' && <DrawdownChart data={positionsCalc} onMaxDrawdown={(pct, date) => setMaxDrawdown({ pct, date })} range={chartRange} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} />}
-                  <p className="text-xs text-[#9E9A93] mt-2">
-                    {chartMode === 'evol'
-                      ? chartRange === '60d'
-                        ? 'Valeur totale de votre portefeuille jour par jour, sur la période choisie.'
-                        : chartRange === 'weekly'
-                        ? 'Valeur totale de votre portefeuille semaine par semaine, depuis votre premier achat.'
-                        : 'Valeur totale de votre portefeuille mois par mois, depuis votre premier achat.'
-                      : chartMode === 'pnl'
-                      ? chartRange === '60d'
-                        ? 'Gain ou perte cumulé jour par jour, sur la période choisie. Inclut les variations de prix et les gains réalisés.'
-                        : chartRange === 'weekly'
-                        ? 'Gain ou perte cumulé semaine par semaine, depuis votre premier achat. Inclut les variations de prix et les gains réalisés.'
-                        : "Gain ou perte cumulé mois par mois, depuis votre premier achat. Inclut les variations de prix et les gains réalisés."
-                      : chartRange === '60d'
-                      ? 'Recul par rapport au dernier sommet, jour par jour, sur la période choisie. 0 % = au plus haut · −10 % = 10 % en dessous du pic.'
-                      : chartRange === 'weekly'
-                      ? 'Recul par rapport au dernier sommet, semaine par semaine, depuis votre premier achat. 0 % = au plus haut · −10 % = 10 % en dessous du pic.'
-                      : 'Recul par rapport au dernier sommet, mois par mois, depuis votre premier achat. 0 % = au plus haut · −10 % = 10 % en dessous du pic.'}
-                  </p>
+                  <div className="h-px bg-[#DDD9D1] dark:bg-[#253040] mx-5 mt-3 mb-0" />
+                  <div className="pb-5 pt-4">
+
+                  {chartMode === 'evol' && <EvolChart data={positionsCalc} showFX={true} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} />}
+                  {chartMode === 'pnl' && <PnLChart data={positionsCalc} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} />}
+                  {chartMode === 'drawdown' && <DrawdownChart data={positionsCalc} onMaxDrawdown={(pct, date) => setMaxDrawdown({ pct, date })} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} />}
+                  </div>{/* end px-5 pt-4 pb-5 wrapper */}
+
                 </div>
-                <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] p-5">
-                  <div className="flex flex-col md:flex-row gap-6">
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-sm font-semibold mb-4">Allocation par catégorie</h3>
-                      <AllocChart data={positionsCalc} />
-                    </div>
-                    <div className="hidden md:block w-px bg-[#DDD9D1] dark:bg-[#1e3347] self-stretch flex-shrink-0" />
-                    <div className="w-full md:w-56 md:flex-shrink-0 flex flex-col gap-3 justify-center">
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-sm font-semibold text-[#1B3050] dark:text-white">Profil d&apos;investisseur</h3>
-                        <a href="/profil?tab=investisseur" className="flex items-center gap-1 text-xs font-medium text-[#2B6B5A] hover:underline">
-                          <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M9 1L11 3L4 10H2V8L9 1Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>
-                          Modifier
-                        </a>
-                      </div>
-                      {(() => {
-                        let score = 0
-                        score += profile.horizon >= 20 ? 4 : profile.horizon >= 10 ? 3 : profile.horizon >= 5 ? 2 : 1
-                        score += profile.loss >= 40 ? 4 : profile.loss >= 25 ? 3 : profile.loss >= 15 ? 2 : 1
-                        score += profile.liquidity === 'faible' ? 3 : profile.liquidity === 'moyenne' ? 2 : 1
-                        score += profile.objective === 'agressif' ? 4 : profile.objective === 'croissance' ? 3 : profile.objective === 'modéré' ? 2 : 1
-                        const pt = score <= 5 ? { label: 'Prudent', color: '#4A7EA5', desc: 'Capital preservation, faible risque.' }
-                          : score <= 8  ? { label: 'Défensif',  color: '#4A8573', desc: 'Rendement régulier, volatilité limitée.' }
-                          : score <= 11 ? { label: 'Équilibré', color: '#C4952A', desc: 'Équilibre croissance / sécurité.' }
-                          : score <= 14 ? { label: 'Dynamique', color: '#B8722A', desc: 'Croissance prioritaire, tolérance modérée.' }
-                          :               { label: 'Agressif',  color: '#A85050', desc: 'Maximisation du rendement long terme.' }
-                        return (
-                          <>
-                            <div className="flex items-center gap-2">
-                              <div>
-                                <p className="font-semibold text-sm leading-tight" style={{ color: pt.color }}>{pt.label}</p>
-                                <p className="text-xs text-[#5C6880] dark:text-[#7B8DA6] leading-tight">{pt.desc}</p>
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-2 gap-1.5">
-                              <div className="bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-2.5">
-                                <p className="text-[10px] text-[#9E9A93] mb-0.5">Horizon</p>
-                                <p className="text-xs font-semibold text-[#1B3050] dark:text-white">{profile.horizon} ans</p>
-                              </div>
-                              <div className="bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-2.5">
-                                <p className="text-[10px] text-[#9E9A93] mb-0.5">Tolérance perte</p>
-                                <p className="text-xs font-semibold text-[#1B3050] dark:text-white">-{profile.loss} %</p>
-                              </div>
-                              <div className="bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-2.5">
-                                <p className="text-[10px] text-[#9E9A93] mb-0.5">Besoin de liquidité</p>
-                                <p className="text-xs font-semibold text-[#1B3050] dark:text-white">{profile.liquidity === 'haute' ? '1–3 ans' : profile.liquidity === 'moyenne' ? '3–7 ans' : '7+ ans'}</p>
-                              </div>
-                              <div className="bg-[#F5F3EF] dark:bg-[#1B2D3E] rounded-lg p-2.5">
-                                <p className="text-[10px] text-[#9E9A93] mb-0.5">Objectif</p>
-                                <p className="text-xs font-semibold text-[#1B3050] dark:text-white">{profile.objective === 'inflation' ? '~2–3 %/an' : profile.objective === 'modéré' ? '~5–7 %/an' : profile.objective === 'croissance' ? '~8–10 %/an' : '~10–15 %/an'}</p>
-                              </div>
-                            </div>
-                          </>
-                        )
-                      })()}
-                    </div>
+
+                <div className="bg-white dark:bg-[#1E2530] rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] overflow-hidden">
+                  {/* ── Positions title row ── */}
+                  <div className="flex items-center justify-between px-5 pt-4 pb-0">
+                    <h2 className="text-base font-bold text-[#1B3050] dark:text-white tracking-tight">Positions ouvertes</h2>
                   </div>
-                </div>
-              </div>
-            </div>
-
-
-            <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] overflow-hidden">
-              <div className="flex items-center border-b border-[#DDD9D1] dark:border-[#1e3347] overflow-x-auto">
-                {(['positions', 'analyse', 'cloturees'] as const).map(tab => (
-                  <button key={tab} onClick={() => setActiveTab(tab)}
-                    className={`px-5 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${activeTab === tab
-                      ? 'border-[#2B6B5A] text-[#2B6B5A]'
-                      : 'border-transparent text-[#5C6880] dark:text-[#7B8DA6] hover:text-[#1B3050] dark:hover:text-white'}`}>
-                    {tab === 'positions' ? 'Positions' : tab === 'analyse' ? 'Analyse FX & Inflation' : 'Positions clôturées'}
-                  </button>
-                ))}
-              </div>
+                  {/* ── Positions tabs — same style as Portfolio chart tabs ── */}
+                  <div className="flex items-center px-5 pt-3 pb-0 overflow-x-auto">
+                  {(['positions', 'analyse', 'cloturees'] as const).map(tab => (
+                    <button key={tab} onClick={() => setActiveTab(tab)}
+                      className={`relative px-3 py-2 text-sm font-semibold whitespace-nowrap transition-colors mr-1
+                        ${activeTab === tab
+                          ? 'text-[#1B3050] dark:text-white'
+                          : 'text-[#9E9A93] hover:text-[#5C6880] dark:hover:text-white/70'}`}>
+                      {tab === 'positions' ? 'Positions ouvertes' : tab === 'analyse' ? 'Analyse FX & Inflation' : 'Positions clôturées'}
+                      {activeTab === tab && (
+                        <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1B3050] dark:bg-white rounded-full" />
+                      )}
+                    </button>
+                  ))}
+                  </div>
+                  <div className="h-px bg-[#DDD9D1] dark:bg-[#253040] mx-5 mt-3 mb-0" />
 
             {activeTab === 'positions' && (
               <div className="">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b border-[#DDD9D1] dark:border-[#1e3347]">
-                        {['Position', 'Qté', 'Prix actuel', 'Valeur CHF', 'Gain CHF', 'Perf.', 'MAJ', 'Actions'].map(h => (
+                      <tr>
+                        {['Actif', 'Quantité', 'Prix actuel', 'Valeur CHF', 'Gain CHF', 'Perf.', 'MAJ', 'Actions'].map(h => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#5C6880] uppercase tracking-wider">{h}</th>
                         ))}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-[#F5F3EF] dark:divide-[#1e3347]">
+                    <tbody>
                       {groupOrder.map(ticker => {
                         const group = groupedPositions[ticker]
                         const longLots = group.filter(p => p.quantite > 0)
@@ -4870,7 +5565,7 @@ export default function PortfolioPage() {
                         const toggle = () => setExpandedTickers(s => { const n = new Set(s); n.has(ticker) ? n.delete(ticker) : n.add(ticker); return n })
                         return (
                           <React.Fragment key={ticker}>
-                            <tr className={`hover:bg-[#F5F3EF]/50 dark:hover:bg-[#1B2D3E]/50 transition-colors ${isExpanded ? 'bg-[#F5F3EF]/30 dark:bg-[#1B2D3E]/30' : ''}`}>
+                            <tr className={`hover:bg-[#F5F3EF]/50 dark:hover:bg-[#253040]/50 transition-colors ${isExpanded ? 'bg-[#F5F3EF]/30 dark:bg-[#1E2530]/30' : ''}`}>
                               <td className="px-4 py-3">
                                 <div className="flex items-center gap-1.5">
                                   {isMulti && (
@@ -4902,7 +5597,7 @@ export default function PortfolioPage() {
                               </td>
                               <td className="px-4 py-3">
                                 <div className="flex gap-2">
-                                  <button onClick={() => openEdit(first)} className="text-xs text-[#2B6B5A] hover:underline">Modifier</button>
+                                  <button onClick={() => openEdit(first)} className="text-xs text-[#9E9A93] hover:underline">Modifier</button>
                                   <button onClick={() => openDeleteModal(first)} className="text-xs text-red-400 hover:underline">Supprimer</button>
                                 </div>
                               </td>
@@ -4919,7 +5614,7 @@ export default function PortfolioPage() {
                                 const _dGain   = _dVal - _dCout
                                 const _dGainPct = _dCout > 0 ? (_dGain / _dCout) * 100 : 0
                                 return (
-                              <tr key={p.id} className="bg-[#F5F3EF]/60 dark:bg-[#1B2D3E]/60 text-[#5C6880] dark:text-[#7B8DA6]">
+                              <tr key={p.id} className="bg-[#F5F3EF]/60 dark:bg-[#1E2530]/60 text-[#5C6880] dark:text-[#7B8DA6]">
                                 <td className="px-4 py-2 pl-9">
                                   <div className="text-xs font-medium flex items-center gap-1.5">
                                     {p.quantite < 0 ? '⇘ Vente du' : 'Lot du'} {fmtDate(p.dateAchat)}
@@ -4970,21 +5665,21 @@ export default function PortfolioPage() {
 
             {activeTab === 'analyse' && (
               <div className="">
-                <div className="px-5 py-3 border-b border-[#F5F3EF] dark:border-[#1e3347] flex gap-6 text-xs text-[#9E9A93]">
+                <div className="px-5 py-3 border-b border-[#F5F3EF] dark:border-[#2A3240] flex gap-6 text-xs text-[#9E9A93]">
                   <span><strong className="text-[#1B3050] dark:text-[#E8E4DC]">CHF nominal</strong> — gain total en CHF</span>
-                  <span><strong className="text-[#2B6B5A]">FX uniquement</strong> — part due au change</span>
+                  <span><strong className="text-[#14B8A6]">FX uniquement</strong> — part due au change</span>
                   <span><strong className="text-[#B5820F]">Réel</strong> — après inflation suisse (IPC OFS)</span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b border-[#DDD9D1] dark:border-[#1e3347]">
-                        {['Position', 'Perf. devise', 'Perf. CHF', 'Impact FX', 'Perf. réelle'].map(h => (
+                      <tr>
+                        {['Actif', 'Perf. devise', 'Perf. CHF', 'Impact FX', 'Perf. réelle'].map(h => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#5C6880] uppercase tracking-wider">{h}</th>
                         ))}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-[#F5F3EF] dark:divide-[#1e3347]">
+                    <tbody>
                       {groupOrder.map(ticker => {
                         const group = groupedPositions[ticker]
                         const isMulti = group.length > 1
@@ -5032,7 +5727,7 @@ export default function PortfolioPage() {
                         const gPerfReel   = gCout > 0 ? (gGainReel / gCout) * 100 : 0
                         return (
                           <React.Fragment key={ticker}>
-                            <tr className={`hover:bg-[#F5F3EF]/50 dark:hover:bg-[#1B2D3E]/50 transition-colors ${isExpanded ? 'bg-[#F5F3EF]/30 dark:bg-[#1B2D3E]/30' : ''}`}>
+                            <tr className={`hover:bg-[#F5F3EF]/50 dark:hover:bg-[#253040]/50 transition-colors ${isExpanded ? 'bg-[#F5F3EF]/30 dark:bg-[#1E2530]/30' : ''}`}>
                               <td className="px-4 py-3">
                                 <div className="flex items-center gap-1.5">
                                   {longsAActive.length > 1 && (
@@ -5073,7 +5768,7 @@ export default function PortfolioPage() {
                               const pGainReel   = p.gainReel   * scale
                               const pValCHF     = p.valeurCHF  * scale
                               return (
-                                <tr key={p.id} className="bg-[#F5F3EF]/60 dark:bg-[#1B2D3E]/60 text-[#5C6880] dark:text-[#7B8DA6]">
+                                <tr key={p.id} className="bg-[#F5F3EF]/60 dark:bg-[#1E2530]/60 text-[#5C6880] dark:text-[#7B8DA6]">
                                   <td className="px-4 py-2 pl-9">
                                     <div className="text-xs font-medium">Lot du {fmtDate(p.dateAchat)}</div>
                                     <div className="text-xs text-[#9E9A93]">Px achat : {p.prixAchat.toLocaleString('fr-CH', { maximumFractionDigits: 2 })} {p.devise}</div>
@@ -5106,7 +5801,7 @@ export default function PortfolioPage() {
             )}
             {activeTab === 'cloturees' && (
               <div className="">
-                <div className="px-5 py-3 border-b border-[#F5F3EF] dark:border-[#1e3347]">
+                <div className="px-5 py-3 border-b border-[#F5F3EF] dark:border-[#2A3240]">
                   <p className="text-xs text-[#9E9A93]">
                     Gains et pertes <strong className="text-[#1B3050] dark:text-[#E8E4DC]">réalisés</strong> lors des réductions ou clôtures de positions — calculés au prix effectif de vente.
                   </p>
@@ -5114,13 +5809,13 @@ export default function PortfolioPage() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b border-[#DDD9D1] dark:border-[#1e3347]">
-                        {['Position', 'Date opération', 'Qté vendue', 'Px achat', 'Taux achat', 'Px vente', 'Taux vente', 'Gain CHF', 'Perf.', ''].map(h => (
+                      <tr>
+                        {['Actif', 'Date opération', 'Qté vendue', 'Px achat', 'Taux achat', 'Px vente', 'Taux vente', 'Gain CHF', 'Perf.', ''].map(h => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#5C6880] uppercase tracking-wider">{h}</th>
                         ))}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-[#F5F3EF] dark:divide-[#1e3347]">
+                    <tbody>
                       {(() => {
                         // ── FIFO split display for cloturées ──────────────────────────────
                         // Build mutable remaining-qty map for long lots, per ticker
@@ -5195,7 +5890,7 @@ export default function PortfolioPage() {
                             const gainCHF = venteCHF - coutCHF
                             const gainPct = coutCHF > 0 ? (gainCHF / coutCHF) * 100 : 0
                             return (
-                              <tr key={key} className="hover:bg-[#F9F8F5] dark:hover:bg-[#1e3347]/40 transition-colors">
+                              <tr key={key} className="hover:bg-[#F9F8F5] dark:hover:bg-[#2A3240]/40 transition-colors">
                                 <td className="px-4 py-3">
                                   <div className="font-medium text-[#1B3050] dark:text-[#E8E4DC] text-sm">{sale.ticker}</div>
                                   <div className="text-xs text-[#9E9A93]">{sale.nom}</div>
@@ -5232,10 +5927,10 @@ export default function PortfolioPage() {
                                         </div>
                                       : <span className="text-[#9E9A93]">—</span>}
                                 </td>
-                                <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainCHF >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
+                                <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainCHF >= 0 ? 'text-[#14B8A6]' : 'text-red-500'}`}>
                                   {(gainCHF >= 0 ? '+' : '') + chf(gainCHF)}
                                 </td>
-                                <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainPct >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
+                                <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainPct >= 0 ? 'text-[#14B8A6]' : 'text-red-500'}`}>
                                   {pct(gainPct)}
                                 </td>
                                 <td className="px-4 py-3">
@@ -5265,7 +5960,7 @@ export default function PortfolioPage() {
                           const gainCHF = venteCHF - coutCHF
                           const gainPct = coutCHF > 0 ? (gainCHF / coutCHF) * 100 : 0
                           return (
-                            <tr key={p.id} className="hover:bg-[#F9F8F5] dark:hover:bg-[#1e3347]/40 transition-colors">
+                            <tr key={p.id} className="hover:bg-[#F9F8F5] dark:hover:bg-[#2A3240]/40 transition-colors">
                               <td className="px-4 py-3">
                                 <div className="font-medium text-[#1B3050] dark:text-[#E8E4DC] text-sm">{p.ticker}</div>
                                 <div className="text-xs text-[#9E9A93]">{p.nom}</div>
@@ -5302,10 +5997,10 @@ export default function PortfolioPage() {
                                       </div>
                                     : <span className="text-[#9E9A93]">—</span>}
                               </td>
-                              <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainCHF >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
+                              <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainCHF >= 0 ? 'text-[#14B8A6]' : 'text-red-500'}`}>
                                 {(gainCHF >= 0 ? '+' : '') + chf(gainCHF)}
                               </td>
-                              <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainPct >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
+                              <td className={`px-4 py-3 font-mono text-xs font-semibold ${gainPct >= 0 ? 'text-[#14B8A6]' : 'text-red-500'}`}>
                                 {pct(gainPct)}
                               </td>
                               <td className="px-4 py-3">
@@ -5347,11 +6042,11 @@ export default function PortfolioPage() {
                           return s + (venteCHF - coutCHF)
                         }, 0)
                         return (
-                          <tr className="border-t-2 border-[#DDD9D1] dark:border-[#2a3f52] bg-[#F9F8F5] dark:bg-[#1a2d3d]">
+                          <tr className="border-t-2 border-[#DDD9D1] dark:border-[#323B4A] bg-[#F9F8F5] dark:bg-[#1E2530]">
                             <td colSpan={7} className="px-4 py-3 text-xs font-semibold text-[#5C6880] uppercase tracking-wider">
                               Total réalisé
                             </td>
-                            <td className={`px-4 py-3 font-mono text-sm font-bold ${totalGain >= 0 ? 'text-[#2B6B5A]' : 'text-red-500'}`}>
+                            <td className={`px-4 py-3 font-mono text-sm font-bold ${totalGain >= 0 ? 'text-[#14B8A6]' : 'text-red-500'}`}>
                               {(totalGain >= 0 ? '+' : '') + chf(totalGain)}
                             </td>
                             <td colSpan={2} className="px-4 py-3" />
@@ -5363,9 +6058,56 @@ export default function PortfolioPage() {
                 </div>
               </div>
             )}
-            </div>
+                </div>
 
-            <InvestorProfileSection data={positionsCalc} profile={profile} />
+              </div>
+
+              {/* ── RIGHT: Profil + Allocation ── */}
+              <div className="lg:col-span-1 flex flex-col gap-4 lg:sticky lg:top-6 lg:self-start">
+
+                {/* ── Analyse du portefeuille card ── */}
+                <Link href="/portfolio/analyse" className="bg-white dark:bg-[#1E2530] rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] p-4 flex items-center justify-between hover:bg-[#F5F3EF] dark:hover:bg-[#253040] transition-colors group">
+                  <div>
+                    <h2 className="text-base font-bold text-[#1B3050] dark:text-white">Analyse du portefeuille</h2>
+                    <p className="text-xs text-[#9E9A93] mt-0.5">Monte Carlo · stress tests · frontière efficiente</p>
+                  </div>
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="text-[#9E9A93] group-hover:text-[#1B3050] dark:group-hover:text-white transition-colors flex-shrink-0"><path d="M6 3l5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                </Link>
+
+                <div className="bg-white dark:bg-[#1E2530] rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] overflow-hidden">
+                  {/* ── Allocation title row ── */}
+                  <div className="flex items-center justify-between px-5 pt-4 pb-0">
+                    <h2 className="text-base font-bold text-[#1B3050] dark:text-white tracking-tight">Allocation</h2>
+                  </div>
+                  {/* ── Allocation sub-tabs ── */}
+                  <div className="flex items-center px-5 pt-3 pb-0">
+                    {(['categorie', 'positions'] as const).map(t => (
+                      <button
+                        key={t}
+                        onClick={() => setAllocTab(t)}
+                        className={`relative px-3 py-2 text-sm font-semibold transition-colors mr-1
+                          ${allocTab === t
+                            ? 'text-[#1B3050] dark:text-white'
+                            : 'text-[#9E9A93] hover:text-[#5C6880] dark:hover:text-white/70'
+                          }`}
+                      >
+                        {t === 'positions' ? 'Actifs' : 'Catégorie'}
+                        {allocTab === t && (
+                          <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#1B3050] dark:bg-white rounded-full" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="h-px bg-[#DDD9D1] dark:bg-[#253040] mx-5 mt-3 mb-0" />
+                  <div className="p-5">
+                    {allocTab === 'categorie' ? <AllocChart data={positionsCalc} /> : <PositionsAllocChart data={positionsCalc} />}
+                  </div>
+                </div>
+
+                {/* ── PnL par période ── */}
+                <PnLBarChart positions={positionsCalc} />
+              </div>
+            </div>
           </>
         )}
       </div>
@@ -5373,8 +6115,8 @@ export default function PortfolioPage() {
       {/* Modale de suppression */}
       {showDeleteModal && deleteTarget && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] w-full max-w-sm">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-[#DDD9D1] dark:border-[#1e3347]">
+          <div className="bg-white dark:bg-[#1E2530] rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] w-full max-w-sm">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[#DDD9D1] dark:border-[#2A3240]">
               <h2 className="font-semibold text-[#1B3050] dark:text-[#E8E4DC]">Supprimer la position</h2>
               <button onClick={() => setShowDeleteModal(false)} className="text-[#9E9A93] hover:text-[#1B3050] dark:hover:text-white text-xl">×</button>
             </div>
@@ -5385,18 +6127,18 @@ export default function PortfolioPage() {
               </p>
 
               <div className="space-y-3">
-                <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${deleteMode === 'permanent' ? 'border-[#2B6B5A] bg-[#2B6B5A]/5' : 'border-[#DDD9D1] dark:border-[#2a3f52] hover:border-[#2B6B5A]/50'}`}>
+                <label className={`flex items-start gap-3 p-3 rounded-sm border cursor-pointer transition-colors ${deleteMode === 'permanent' ? 'border-[#14B8A6] bg-[#14B8A6]/5' : 'border-[#DDD9D1] dark:border-[#323B4A] hover:border-[#14B8A6]/50'}`}>
                   <input type="radio" name="deleteMode" value="permanent" checked={deleteMode === 'permanent'}
-                    onChange={() => setDeleteMode('permanent')} className="mt-0.5 accent-[#2B6B5A]" />
+                    onChange={() => setDeleteMode('permanent')} className="mt-0.5 accent-[#14B8A6]" />
                   <div>
                     <p className="text-sm font-medium text-[#1B3050] dark:text-[#E8E4DC]">Supprimer définitivement</p>
                     <p className="text-xs text-[#9E9A93] mt-0.5">La position est supprimée de toutes les données.</p>
                   </div>
                 </label>
 
-                <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${deleteMode === 'close' ? 'border-[#2B6B5A] bg-[#2B6B5A]/5' : 'border-[#DDD9D1] dark:border-[#2a3f52] hover:border-[#2B6B5A]/50'}`}>
+                <label className={`flex items-start gap-3 p-3 rounded-sm border cursor-pointer transition-colors ${deleteMode === 'close' ? 'border-[#14B8A6] bg-[#14B8A6]/5' : 'border-[#DDD9D1] dark:border-[#323B4A] hover:border-[#14B8A6]/50'}`}>
                   <input type="radio" name="deleteMode" value="close" checked={deleteMode === 'close'}
-                    onChange={() => setDeleteMode('close')} className="mt-0.5 accent-[#2B6B5A]" />
+                    onChange={() => setDeleteMode('close')} className="mt-0.5 accent-[#14B8A6]" />
                   <div className="flex-1">
                     <p className="text-sm font-medium text-[#1B3050] dark:text-[#E8E4DC]">Clôturer à une date</p>
                     <p className="text-xs text-[#9E9A93] mt-0.5">La position reste dans l'historique mais disparaît du portefeuille actuel à partir de la date choisie.</p>
@@ -5411,7 +6153,7 @@ export default function PortfolioPage() {
                           <p className="text-xs text-[#9E9A93] animate-pulse">Récupération du prix historique…</p>
                         )}
                         {deleteCloseDate && !deleteHistoLoading && deleteHistoPrice && (
-                          <p className="text-xs text-[#2B6B5A]">
+                          <p className="text-xs text-[#14B8A6]">
                             Prix au {deleteCloseDate} : <strong>{deleteHistoPrice.price.toLocaleString('fr-CH', { maximumFractionDigits: 2 })} {deleteTarget?.devise}</strong>
                             {deleteTarget?.devise !== 'CHF' && <> · Taux CHF : <strong>{deleteHistoPrice.fxRate.toFixed(4)}</strong></>}
                           </p>
@@ -5427,12 +6169,12 @@ export default function PortfolioPage() {
 
               <div className="flex gap-3 pt-1">
                 <button onClick={() => setShowDeleteModal(false)}
-                  className="flex-1 border border-[#DDD9D1] dark:border-[#2a3f52] text-[#5C6880] text-sm py-2 rounded-lg hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] transition-colors">
+                  className="flex-1 border border-[#DDD9D1] dark:border-[#323B4A] text-[#5C6880] text-sm py-2 rounded-sm hover:bg-[#F5F3EF] dark:hover:bg-[#253040] transition-colors">
                   Annuler
                 </button>
                 <button onClick={confirmDelete}
                   disabled={deleteMode === 'close' && !deleteCloseDate}
-                  className="flex-1 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white text-sm py-2 rounded-lg transition-colors font-medium">
+                  className="flex-1 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white text-sm py-2 rounded-sm transition-colors font-medium">
                   {deleteMode === 'permanent' ? 'Supprimer' : 'Clôturer'}
                 </button>
               </div>
@@ -5444,13 +6186,13 @@ export default function PortfolioPage() {
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-[#162534] rounded-xl border border-[#DDD9D1] dark:border-[#1e3347] w-full max-w-lg max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-[#DDD9D1] dark:border-[#1e3347]">
+          <div className="bg-white dark:bg-[#1E2530] rounded-sm border border-[#DDD9D1] dark:border-[#2A3240] w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[#DDD9D1] dark:border-[#2A3240]">
               <h2 className="font-semibold">{editId ? 'Modifier la position' : 'Ajouter une position'}</h2>
               <div className="flex items-center gap-2">
                 <div className="relative group">
                   <button type="button" className="w-5 h-5 rounded-full border border-[#9E9A93] text-[#9E9A93] hover:border-[#1B3050] hover:text-[#1B3050] dark:hover:border-[#A8D8C8] dark:hover:text-[#A8D8C8] text-xs flex items-center justify-center transition-colors leading-none">?</button>
-                  <div className="absolute right-0 top-7 w-72 bg-white dark:bg-[#1B2D3E] border border-[#DDD9D1] dark:border-[#2a3f52] rounded-lg shadow-lg p-3 text-xs text-[#5C6880] dark:text-[#A8B8C8] hidden group-hover:block z-10">
+                  <div className="absolute right-0 top-7 w-72 bg-white dark:bg-[#1E2530] border border-[#DDD9D1] dark:border-[#323B4A] rounded-sm shadow-lg p-3 text-xs text-[#5C6880] dark:text-[#A8B8C8] hidden group-hover:block z-10">
                     <p className="font-medium text-[#1B3050] dark:text-[#E8E4DC] mb-1">Catégorisation automatique</p>
                     <p>La catégorie est attribuée automatiquement selon le type retourné par Twelve Data, mais des erreurs peuvent survenir — notamment pour les ETF obligataires ou certains fonds.</p>
                     <p className="mt-1.5">Vous pouvez toujours <span className="font-medium text-[#1B3050] dark:text-[#E8E4DC]">modifier la catégorie manuellement</span> en cliquant sur les boutons ci-dessus.</p>
@@ -5470,8 +6212,8 @@ export default function PortfolioPage() {
                       onClick={() => setForm(f => ({ ...f, categorie: c }))}
                       className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
                         form.categorie === c
-                          ? 'bg-[#2B6B5A] text-white border-[#2B6B5A]'
-                          : 'border-[#DDD9D1] dark:border-[#2a3f52] text-[#5C6880] hover:border-[#2B6B5A] hover:text-[#2B6B5A]'
+                          ? 'bg-[#14B8A6] text-white border-[#14B8A6]'
+                          : 'border-[#DDD9D1] dark:border-[#323B4A] text-[#5C6880] hover:border-[#14B8A6] hover:text-[#14B8A6]'
                       }`}>
                       {c}
                     </button>
@@ -5486,9 +6228,9 @@ export default function PortfolioPage() {
                   {editId && groupHasSlices && <span className="ml-1 text-[#9E9A93] font-normal">(verrouillé)</span>}
                 </label>
                 {editId && groupHasSlices ? (
-                  <div className={`${inputCls} bg-[#F5F3EF] dark:bg-[#0F1E2C] text-[#9E9A93] cursor-not-allowed select-none`}
+                  <div className={`${inputCls} bg-[#F5F3EF] dark:bg-[#181C22] text-[#9E9A93] cursor-not-allowed select-none`}
                     title="L'actif ne peut plus être modifié après un ajout ou une réduction">
-                    {form.nom ? `${form.nom} · ` : ''}<span className="font-mono text-[#2B6B5A] font-medium">{form.ticker}</span>
+                    {form.nom ? `${form.nom} · ` : ''}<span className="font-mono text-[#14B8A6] font-medium">{form.ticker}</span>
                     {form.devise ? <span className="font-mono text-[#9E9A93]"> · {form.devise}</span> : null}
                   </div>
                 ) : (
@@ -5502,9 +6244,12 @@ export default function PortfolioPage() {
                       onChange={({ ticker, nom, devise, type }) => {
                         const TYPE_TO_CAT: Record<string, string> = {
                           'equity': 'Actions', 'etf': 'ETF',
-                          'cryptocurrency': 'Crypto', 'future': 'Matières premières',
-                          'futures': 'Matières premières', 'currency': 'Monnaies',
-                          'mutual fund': 'ETF Oblig.', 'mutualfund': 'ETF Oblig.', 'bond': 'ETF Oblig.',
+                          'action': 'Actions',
+                          'cryptocurrency': 'Crypto', 'crypto': 'Crypto',
+                          'future': 'Matières premières', 'futures': 'Matières premières', 'commodity': 'Matières premières',
+                          'currency': 'Forex', 'forex': 'Forex',
+                          'mutual fund': 'Fonds', 'mutualfund': 'Fonds', 'bond': 'Fonds', 'fonds': 'Fonds',
+                          'etc': 'ETF', 'etn': 'ETF',
                         }
                         const categorie = TYPE_TO_CAT[type.toLowerCase()] ?? form.categorie
                         setForm(f => ({ ...f, ticker, nom, devise, categorie }))
@@ -5514,16 +6259,21 @@ export default function PortfolioPage() {
                           setManuel(true)
                           fetchPrixActuelFor(ticker, devise)
                           if (form.dateAchat) fetchPrixAchatFor(ticker, devise, form.dateAchat)
-                          fetchHistory(ticker).then(raw => {
-                            const hist = raw[ticker] as { dates?: string[] } | undefined
-                            if (hist?.dates && hist.dates.length > 0) setFormTickerMinDate(hist.dates[0])
-                          }).catch(() => {})
+                          const cachedMin = getMinDateFromCache(ticker)
+                          if (cachedMin) {
+                            setFormTickerMinDate(cachedMin)
+                          } else {
+                            fetchHistory(ticker).then(raw => {
+                              const hist = raw[ticker] as { dates?: string[] } | undefined
+                              if (hist?.dates && hist.dates.length > 0) setFormTickerMinDate(hist.dates[0])
+                            }).catch(() => {})
+                          }
                         }
                       }}
                     />
                     {form.ticker && (
                       <p className="text-xs text-[#9E9A93] mt-1">
-                        <span className="font-mono text-[#2B6B5A] font-medium">{form.ticker}</span>
+                        <span className="font-mono text-[#14B8A6] font-medium">{form.ticker}</span>
                         {' '}· <span className="font-mono">{form.devise}</span>
                       </p>
                     )}
@@ -5539,7 +6289,7 @@ export default function PortfolioPage() {
                     {editId && groupHasSlices && <span className="ml-1 text-[#9E9A93] font-normal">(verrouillé)</span>}
                   </label>
                   {editId && groupHasSlices ? (
-                    <div className={`${inputCls} bg-[#F5F3EF] dark:bg-[#0F1E2C] text-[#9E9A93] cursor-not-allowed select-none`}
+                    <div className={`${inputCls} bg-[#F5F3EF] dark:bg-[#181C22] text-[#9E9A93] cursor-not-allowed select-none`}
                       title="Modifiez via Ajout/Réduction pour changer la quantité">
                       {sliceGroupTotal}
                     </div>
@@ -5566,7 +6316,7 @@ export default function PortfolioPage() {
                     {editId && groupHasSlices && <span className="ml-1 text-[#9E9A93] font-normal">(verrouillé)</span>}
                   </label>
                   {editId && groupHasSlices ? (
-                    <div className={`${inputCls} bg-[#F5F3EF] dark:bg-[#0F1E2C] text-[#9E9A93] cursor-not-allowed select-none`}
+                    <div className={`${inputCls} bg-[#F5F3EF] dark:bg-[#181C22] text-[#9E9A93] cursor-not-allowed select-none`}
                       title="La date d'achat ne peut plus être modifiée après un ajout ou une réduction">
                       {form.dateAchat ? fmtDate(form.dateAchat) : ''}
                     </div>
@@ -5607,7 +6357,7 @@ export default function PortfolioPage() {
 
               {/* Champs manuels */}
               {manuel && (
-                <div className="border border-[#DDD9D1] dark:border-[#2a3f52] rounded-xl p-4 space-y-4 bg-[#F5F3EF]/50 dark:bg-[#0F1E2C]/50">
+                <div className="border border-[#DDD9D1] dark:border-[#323B4A] rounded-sm p-4 space-y-4 bg-[#F5F3EF]/50 dark:bg-[#181C22]/50">
                   <p className="text-xs text-[#9E9A93]">Ces champs sont remplis automatiquement. Modifiez-les si nécessaire ou si l'actif n'est pas trouvé.</p>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -5657,10 +6407,10 @@ export default function PortfolioPage() {
 
               {/* Tranche (mode édition uniquement) */}
               {editId && (
-                <div className="border border-[#DDD9D1] dark:border-[#2a3f52] rounded-xl p-4 bg-[#F5F3EF]/30 dark:bg-[#0F1E2C]/30 space-y-3">
+                <div className="border border-[#DDD9D1] dark:border-[#323B4A] rounded-sm p-4 bg-[#F5F3EF]/30 dark:bg-[#181C22]/30 space-y-3">
                   <label className="flex items-center gap-2 cursor-pointer select-none">
                     <input type="checkbox" checked={sliceMode} onChange={e => setSliceMode(e.target.checked)}
-                      className="w-4 h-4 accent-[#2B6B5A]" />
+                      className="w-4 h-4 accent-[#14B8A6]" />
                     <span className="text-xs font-medium text-[#5C6880] dark:text-[#A8B8C8]">
                       Ajouter un lot / Ajuster la quantité
                       <span className="ml-1 font-normal text-[#9E9A93]">(historique conservé, performance par lot)</span>
@@ -5707,7 +6457,7 @@ export default function PortfolioPage() {
                           />
                           <p className="text-xs mt-1 text-[#9E9A93]">Total groupe actuel : {sliceGroupTotal}</p>
                           {sliceQuantite > 0 && sliceQuantite !== sliceGroupTotal && (
-                            <p className="text-xs mt-1 text-[#2B6B5A]">
+                            <p className="text-xs mt-1 text-[#14B8A6]">
                               {sliceQuantite > sliceGroupTotal ? `Nouveau lot : +${sliceQuantite - sliceGroupTotal} ${form.ticker}` : `Réduction : ${sliceQuantite - sliceGroupTotal} ${form.ticker}`}
                             </p>
                           )}
@@ -5745,7 +6495,7 @@ export default function PortfolioPage() {
                           )}
                         </div>
                         {sliceHistoPrice && !sliceHistoLoading && (
-                          <p className="text-xs mt-1 text-[#2B6B5A]">
+                          <p className="text-xs mt-1 text-[#14B8A6]">
                             {sliceQuantite > sliceGroupTotal ? "Prix d'achat suggéré" : "Prix de vente"} au {sliceDate} : {sliceHistoPrice.price.toLocaleString('fr-CH', { maximumFractionDigits: 2 })} {form.devise}
                             {form.devise !== 'CHF' && ` · Taux CHF : ${sliceHistoPrice.fxRate.toFixed(4)}`}
                           </p>
@@ -5761,11 +6511,11 @@ export default function PortfolioPage() {
 
               <div className="flex gap-3 pt-1">
                 <button onClick={() => setShowModal(false)}
-                  className="flex-1 border border-[#DDD9D1] dark:border-[#2a3f52] text-[#5C6880] text-sm py-2 rounded-lg hover:bg-[#F5F3EF] dark:hover:bg-[#1B2D3E] transition-colors">
+                  className="flex-1 border border-[#DDD9D1] dark:border-[#323B4A] text-[#5C6880] text-sm py-2 rounded-sm hover:bg-[#F5F3EF] dark:hover:bg-[#253040] transition-colors">
                   Annuler
                 </button>
                 <button onClick={saveForm} disabled={(!form.ticker && !form.nom) || (sliceMode && !!sliceDate && !!form.dateAchat && sliceDate < form.dateAchat) || (!sliceMode && !(editId && groupHasSlices) && !(form.quantite > 0))}
-                  className="flex-1 bg-[#2B6B5A] hover:bg-[#225549] disabled:opacity-40 text-white text-sm py-2 rounded-lg transition-colors font-medium">
+                  className="flex-1 bg-[#14B8A6] hover:bg-[#225549] disabled:opacity-40 text-white text-sm py-2 rounded-sm transition-colors font-medium">
                   {editId ? (sliceMode ? "Créer l'ajustement" : 'Enregistrer') : 'Ajouter'}
                 </button>
               </div>
