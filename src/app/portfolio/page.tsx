@@ -2082,6 +2082,8 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
     ? visPtsPReel[0].reel - visPtsPReel[0].nominal
     : 0
   const rr = (v: number) => v - reelRenderOffset
+  // Affiche la courbe réelle sauf sur 1J/1S/1M
+  const showReelChart = showReel && !['1D', '1W', '1M'].includes(timePeriod ?? '')
   const scalePtsP = isZoomedPnl && visPtsP.length > 1 ? visPtsP : points
   const allValsVis = scalePtsP.flatMap(p => {
     const arr: number[] = []
@@ -2105,8 +2107,6 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
   const tickVals = Array.from({ length: Math.round((maxVVis - minVVis) / niceStepVis) + 1 }, (_, i) => minVVis + i * niceStepVis)
   const zeroY = py(0)
 
-  // Affiche la courbe réelle sauf sur 1J/1S/1M
-  const showReelChart = showReel && !['1D', '1W', '1M'].includes(timePeriod ?? '')
   const nomAreas = showNominal ? buildColoredAreas(points.map(p => ({ x: p.x, val: p.nominal, base: anchorNominal })), px, py) : { gainD: '', lossD: '' }
   const reelKnownPts = points.filter(p => p.reelKnown)
   const reelAreas = showReelChart ? buildColoredAreas(reelKnownPts.map(p => ({ x: p.x, val: rr(p.reel), base: 0 })), px, py) : { gainD: '', lossD: '' }
