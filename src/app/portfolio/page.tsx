@@ -1642,7 +1642,6 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
             flush()
             return runs.map((r, i) => <path key={i} d={rndPath(r.pts)} fill="none" stroke={r.color} strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round" />)
           })()}
-          <circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="3.5" fill='#1B5C80' />
         </>
       )}
       {showNominal && (
@@ -1691,6 +1690,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
 
       </g>
       <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="7" fill="none" stroke={points[points.length-1].nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="4" fill={points[points.length-1].nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} /></>
+      {showReel && <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="5.5" fill="none" stroke="#1B5C80" strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="3.5" fill="#1B5C80" /></>}
       {hoverIdxPnl !== null && (() => {
         const hov = points[hoverIdxPnl]
         const mx = hoverMxPnl ?? px(hov.x)
