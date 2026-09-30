@@ -1345,7 +1345,9 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
   const [progress, setProgress] = useState(0)
   const showInvesti = true
   const showValeur = true
-  const [showHorsFX, setShowHorsFX] = useState(true)
+  const [showHorsFX, setShowHorsFX] = useState(false)
+  // Réinitialise Hors FX à chaque changement de période / intervalle
+  React.useEffect(() => { setShowHorsFX(false) }, [interval, range, dateFrom, dateTo])
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
   const [hoverMxEvol, setHoverMxEvol] = useState<number | null>(null)
   const [zoomWEvol, setZoomWEvol] = useState<[number, number]>([0, 1])
