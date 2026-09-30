@@ -690,32 +690,68 @@ function fmtHourDay(iso: string): string {
 
 // ─── Shared price cache ──────────────────────────────────────────────────────
 const priceCache = new Map<string, { price: number; fxRate: number }>()
-const historyCache = new Map<string, Record<string, { dates: string[]; closes: number[] }>>()
-// Déduplique les requêtes en vol (évite 3 appels identiques si 3 charts s'initialisent en même temps)
-const historyInProgress = new Map<string, Promise<Record<string, { dates: string[]; closes: number[] }>>>()
+
+// Cache par ticker (clé = "TICKER:interval") — permet à des ensembles de tickers
+// différents de partager les données déjà fetchées et réduit les appels simultanés.
+type HistEntry = { dates: string[]; closes: number[] }
+const tickerHistCache = new Map<string, HistEntry>()
+const tickerHistInProgress = new Map<string, Promise<void>>()
+
 // Cherche la première date connue d'un ticker dans le cache existant (évite un fetch supplémentaire)
 function getMinDateFromCache(ticker: string): string | undefined {
-  const key = ticker.toUpperCase()
-  for (const [, data] of historyCache.entries()) {
-    const entry = data[key]
-    if (entry?.dates && entry.dates.length > 0) return entry.dates[0]
-  }
+  const entry = tickerHistCache.get(ticker.toUpperCase() + ':1day')
+  if (entry?.dates && entry.dates.length > 0) return entry.dates[0]
   return undefined
 }
-async function fetchHistory(tickers: string, bust = false, interval: '1day' | '1h' | '4h' | '5min' = '1day'): Promise<Record<string, { dates: string[]; closes: number[] }>> {
-  const cacheKey = tickers + ':' + interval + (bust ? ':bust' : '')
-  if (!bust && historyCache.has(cacheKey)) return historyCache.get(cacheKey)!
-  if (!bust && historyInProgress.has(cacheKey)) return historyInProgress.get(cacheKey)!
-  const promise = (async () => {
-    const url = `/api/history?tickers=${encodeURIComponent(tickers)}&interval=${interval}${bust ? '&bust=1' : ''}`
-    const res = await fetch(url)
-    const data = await res.json()
-    historyCache.set(cacheKey, data)
-    historyInProgress.delete(cacheKey)
-    return data
-  })()
-  if (!bust) historyInProgress.set(cacheKey, promise)
-  return promise
+
+async function fetchHistory(tickers: string, bust = false, interval: '1day' | '1h' | '4h' | '5min' = '1day'): Promise<Record<string, HistEntry>> {
+  const tickerList = tickers.split(',').map(t => t.trim().toUpperCase()).filter(Boolean)
+
+  // bust : invalide le cache pour ces tickers
+  if (bust) {
+    for (const t of tickerList) tickerHistCache.delete(t + ':' + interval)
+  }
+
+  // Partitionne de façon synchrone : déjà en cache / en cours / à fetcher
+  const needFetch: string[] = []
+  const waitFor: Promise<void>[] = []
+  for (const t of tickerList) {
+    const ck = t + ':' + interval
+    if (tickerHistCache.has(ck)) continue
+    if (tickerHistInProgress.has(ck)) { waitFor.push(tickerHistInProgress.get(ck)!); continue }
+    needFetch.push(t)
+  }
+
+  // Lance un seul appel batch pour les tickers manquants et l'enregistre AVANT d'await
+  // → les appels concurrents voient immédiatement l'entrée en-cours et ne dupliquent pas
+  if (needFetch.length > 0) {
+    const batchPromise = (async () => {
+      try {
+        const url = `/api/history?tickers=${encodeURIComponent(needFetch.join(','))}&interval=${interval}`
+        const res = await fetch(url)
+        if (res.ok) {
+          const data: Record<string, HistEntry> = await res.json()
+          for (const t of needFetch) {
+            tickerHistCache.set(t + ':' + interval, data[t] ?? { dates: [], closes: [] })
+          }
+        }
+      } finally {
+        for (const t of needFetch) tickerHistInProgress.delete(t + ':' + interval)
+      }
+    })()
+    for (const t of needFetch) tickerHistInProgress.set(t + ':' + interval, batchPromise)
+    waitFor.push(batchPromise)
+  }
+
+  if (waitFor.length > 0) await Promise.all(waitFor)
+
+  // Assemble le résultat depuis le cache par ticker
+  const result: Record<string, HistEntry> = {}
+  for (const t of tickerList) {
+    const entry = tickerHistCache.get(t + ':' + interval)
+    if (entry) result[t] = entry
+  }
+  return result
 }
 
 const priceFetchInProgress = new Map<string, Promise<{ price: number; fxRate: number } | null>>()
@@ -5473,20 +5509,15 @@ export default function PortfolioPage() {
     })
     const tickersStr = Array.from(tickerSet).join(',')
 
-    let histData: Record<string, { dates: string[]; closes: number[] }> = {}
-    let fetchOk = true
+    let histData: Record<string, HistEntry> = {}
     try {
-      // Un seul appel batch — bust=1 pour forcer le rafraîchissement
-      const res = await fetch(`/api/history?tickers=${encodeURIComponent(tickersStr)}&interval=1day&bust=1`)
-      if (res.ok) {
-        histData = await res.json()
-        // Met à jour le cache client pour que les charts profitent immédiatement des données fraîches
-        historyCache.set(tickersStr + ':1day', histData)
-        historyInProgress.delete(tickersStr + ':1day')
-      } else fetchOk = false
-    } catch { fetchOk = false }
-
-    if (!fetchOk) {
+      // Passe bust=true : invalide le cache par ticker et force un rafraîchissement
+      // Les charts profitent immédiatement des données fraîches via le cache partagé
+      histData = await fetchHistory(tickersStr, true, '1day')
+    } catch {
+      setRefreshError('Impossible de récupérer les prix.'); setRefreshing(false); return
+    }
+    if (Object.keys(histData).length === 0) {
       setRefreshError('Impossible de récupérer les prix.'); setRefreshing(false); return
     }
 
