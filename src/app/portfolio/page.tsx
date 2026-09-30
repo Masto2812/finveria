@@ -1499,11 +1499,13 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
       if (interval === '1day' && dateFrom && result.length > 0 && result[0].x > 0.001) {
         result[0].x = 0
       }
-      // Supprime les points consécutifs où la valeur (et le coût) ne changent pas — tous intervalles
+      // Supprime les points consécutifs où aucune des trois courbes ne change — tous intervalles
+      // valueNoFX inclus pour que les deux courbes aient la même densité de données
       const deduped = result.length > 1
         ? result.filter((pt, i) => i === 0
-            || Math.abs(pt.value - result[i - 1].value) > 0.001
-            || Math.abs(pt.cost  - result[i - 1].cost)  > 0.001)
+            || Math.abs(pt.value      - result[i - 1].value)      > 0.001
+            || Math.abs(pt.cost       - result[i - 1].cost)       > 0.001
+            || Math.abs(pt.valueNoFX  - result[i - 1].valueNoFX)  > 0.001)
         : result
       // Espacement uniforme entre points (ignore l'écart de temps réel)
       const finalResult = deduped.length > 1
