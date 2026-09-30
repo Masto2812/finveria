@@ -1499,9 +1499,10 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
       if (interval === '1day' && dateFrom && result.length > 0 && result[0].x > 0.001) {
         result[0].x = 0
       }
-      // Supprime les points consécutifs où aucune des trois courbes ne change — tous intervalles
-      // valueNoFX inclus pour que les deux courbes aient la même densité de données
-      const deduped = result.length > 1
+      // Pour l'intraday (5min, 1h, 4h), chaque candle est pertinent — pas de déduplication
+      // Pour les données journalières+, supprimer les points plats sur les 3 courbes
+      const isIntraday = interval === '5min' || interval === '1h' || interval === '4h'
+      const deduped = (!isIntraday && result.length > 1)
         ? result.filter((pt, i) => i === 0
             || Math.abs(pt.value      - result[i - 1].value)      > 0.001
             || Math.abs(pt.cost       - result[i - 1].cost)       > 0.001
