@@ -2036,14 +2036,12 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
         const off = { nominal: result[0].nominal, reel: result[0].reel, nominalNoFX: result[0].nominalNoFX }
         for (const pt of result) { pt.nominal -= off.nominal; pt.reel -= off.reel; pt.nominalNoFX -= off.nominalNoFX }
       }
-      // 1A : aligner le premier point réel visible sur nominal (inflation relative au début de la période)
+      // 1A : aligner le premier point réel sur nominal (inflation relative au début de la période, pas à l'achat)
+      // On cherche le 1er vrai point de données (cost > 0) car result[0] peut être un ancrage vide (cost=0)
       if (timePeriod === '1Y' && result.length > 0) {
-        const firstReel = result.find(p => p.reelKnown)
-        if (firstReel && firstReel.reel !== 0) {
-          const factor = firstReel.nominal / firstReel.reel
-          for (const pt of result) { pt.reel *= factor }
-        } else if (firstReel) {
-          const offset = firstReel.reel - firstReel.nominal
+        const firstRef = result.find(p => p.reelKnown && p.cost > 0) ?? result.find(p => p.reelKnown)
+        if (firstRef) {
+          const offset = firstRef.reel - firstRef.nominal
           for (const pt of result) { pt.reel -= offset }
         }
       }
