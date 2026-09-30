@@ -2160,12 +2160,12 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
           <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 px-2.5 py-2 bg-[#EDEAE4] dark:bg-[#323B4A] text-[#4B4945] dark:text-[#C8C4BC] text-[10px] rounded shadow-md opacity-0 group-hover/tipPnl:opacity-100 transition-opacity z-50 leading-relaxed space-y-1.5">
             <span className="flex items-center gap-2 whitespace-nowrap">
               <svg width="20" height="10" className="flex-shrink-0"><line x1="0" y1="5" x2="10" y2="5" stroke="#14B8A6" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#EF4444" strokeWidth="2" /></svg>
-              <span><span className="font-semibold text-[#14B8A6]">Nominal</span> — gain/perte brut</span>
+              <span><span className="font-semibold">Nominal</span> — gain/perte brut</span>
             </span>
             {!['1D', '1W', '1M'].includes(timePeriod ?? '') && (
             <span className="flex items-center gap-2 whitespace-nowrap">
               <svg width="20" height="10" className="flex-shrink-0"><line x1="0" y1="5" x2="20" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="5 3" /></svg>
-              <span><span className="font-semibold text-[#1B5C80]">Réel</span> — ajusté de l&apos;inflation</span>
+              <span><span className="font-semibold">Réel</span> — ajusté de l&apos;inflation</span>
             </span>
             )}
           </span>
