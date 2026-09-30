@@ -1702,6 +1702,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
           <g>
             <line x1={mx} y1={PAD.t} x2={mx} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
             {showNominal && <circle cx={px(hov.x)} cy={py(hov.nominal)} r="4" fill={hov.nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} />}
+            {showReel && <circle cx={px(hov.x)} cy={py(hov.reel)} r="4" fill="#1B5C80" />}
             <g transform={`translate(${lx},${ly})`}>
               <rect x="-22" y="-9" width="44" height="18" rx="4" fill="#0f1f18" stroke="#2D4A38" strokeWidth="0.6" opacity="0.92" />
               <text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="500" fill="#B8B3AB">{hov.label}</text>
