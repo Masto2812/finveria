@@ -1650,9 +1650,15 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
         </button>
         <span className="relative inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-[#EDEAE4] dark:bg-[#323B4A] text-[#9E9A93] text-[9px] font-bold cursor-help group/tipEvol">
           ?
-          <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 px-2 py-1 bg-[#1B3050] dark:bg-[#253040] text-white text-[10px] rounded opacity-0 group-hover/tipEvol:opacity-100 transition-opacity z-50 leading-relaxed">
-            <span className="block whitespace-nowrap"><span className="font-semibold text-[#14B8A6]">Valeur actuelle</span> — valeur totale du portefeuille au fil du temps</span>
-            <span className="block whitespace-nowrap"><span className="font-semibold text-[#1B5C80]">Hors FX</span> — valeur sans l&apos;effet des variations de change (FX figé à l&apos;achat)</span>
+          <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 px-2.5 py-2 bg-[#EDEAE4] dark:bg-[#323B4A] text-[#4B4945] dark:text-[#C8C4BC] text-[10px] rounded shadow-md opacity-0 group-hover/tipEvol:opacity-100 transition-opacity z-50 leading-relaxed space-y-1.5">
+            <span className="flex items-center gap-2 whitespace-nowrap">
+              <svg width="20" height="10" className="flex-shrink-0"><line x1="0" y1="5" x2="10" y2="5" stroke="#14B8A6" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#EF4444" strokeWidth="2" /></svg>
+              <span><span className="font-semibold">Valeur actuelle</span> — valeur totale du portefeuille</span>
+            </span>
+            <span className="flex items-center gap-2 whitespace-nowrap">
+              <svg width="20" height="10" className="flex-shrink-0"><line x1="0" y1="5" x2="20" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="5 3" /></svg>
+              <span><span className="font-semibold">Hors FX</span> — FX figé au taux d&apos;achat</span>
+            </span>
           </span>
         </span>
       </div>
