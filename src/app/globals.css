@@ -125,3 +125,30 @@ html.dark {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* ── Select devise : options sur le même fond que l'input ── */
+select.devise-select option {
+  background-color: #ffffff;
+  color: #1B3050;
+}
+
+.dark select.devise-select option {
+  background-color: #1B2D3E;
+  color: #E8E4DC;
+}
+
+/* ── Chart hover labels — couleurs bouton "Ajouter une position" ── */
+:root {
+  --chart-lbl-bg: #1B3050;
+  --chart-lbl-text: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --chart-lbl-bg: rgba(255,255,255,0.12);
+    --chart-lbl-text: #ffffff;
+  }
+}
+:root[data-theme="dark"] {
+  --chart-lbl-bg: rgba(255,255,255,0.12);
+  --chart-lbl-text: #ffffff;
+}

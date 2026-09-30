@@ -680,12 +680,33 @@ function fmtDay(iso: string): string {
   return iso.slice(8, 10) + '/' + iso.slice(5, 7)
 }
 function fmtTime(iso: string): string {
-  // "YYYY-MM-DD HH:mm:ss" → "HH:MM"
-  return iso.slice(11, 16)
+  // "YYYY-MM-DD HH:mm:ss" → "14h35"
+  return iso.slice(11, 13) + 'h' + iso.slice(14, 16)
 }
 function fmtHourDay(iso: string): string {
   // "YYYY-MM-DD HH:mm:ss" → "DD/MM HHh"
   return iso.slice(8, 10) + '/' + iso.slice(5, 7) + ' ' + iso.slice(11, 13) + 'h'
+}
+const MOIS_FR = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre']
+function fmtHourDayFull(iso: string): string {
+  // "YYYY-MM-DD HH:mm:ss" → "8h, 3 septembre"
+  const h = parseInt(iso.slice(11, 13), 10)
+  const day = parseInt(iso.slice(8, 10), 10)
+  const month = parseInt(iso.slice(5, 7), 10) - 1
+  return `${h}h, ${day} ${MOIS_FR[month]}`
+}
+function fmtDayMonth(iso: string): string {
+  // "YYYY-MM-DD" → "3 septembre"
+  const day = parseInt(iso.slice(8, 10), 10)
+  const month = parseInt(iso.slice(5, 7), 10) - 1
+  return `${day} ${MOIS_FR[month]}`
+}
+function fmtDayMonthYear(iso: string): string {
+  // "YYYY-MM-DD" → "3 septembre 2026"
+  const day = parseInt(iso.slice(8, 10), 10)
+  const month = parseInt(iso.slice(5, 7), 10) - 1
+  const year = iso.slice(0, 4)
+  return `${day} ${MOIS_FR[month]} ${year}`
 }
 
 // ─── Shared price cache ──────────────────────────────────────────────────────
@@ -1504,7 +1525,8 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
           return s + p.quantite * prices[j].price * p.tauxAchatCHF
         }, 0)
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
-        const label = (interval === '5min') ? fmtTime(dateStr) : (interval === '1h' || interval === '4h') ? fmtHourDay(dateStr) : range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
+        const _spanMs = dateFrom ? (new Date(dateTo ?? today).getTime() - new Date(dateFrom).getTime()) : Infinity
+        const label = (interval === '5min') ? fmtTime(dateStr) : (interval === '1h' || interval === '4h') ? fmtHourDayFull(dateStr) : range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : (timePeriod === '1Y' || (timePeriod === 'Max' && _spanMs > 365 * 24 * 3600 * 1000)) ? fmtDayMonthYear(dateStr) : fmtDayMonth(dateStr)
         result.push({ x: isToday ? 1 : t, cost: cumCost, value, valueNoFX, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
       }
@@ -1519,7 +1541,7 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
           const nowValue = nowActivePosns.reduce((s, p, j) => s + p.quantite * nowPrices[j].price * nowPrices[j].fxRate, 0)
           const nowValueNoFX = nowActivePosns.reduce((s, p, j) => s + p.quantite * nowPrices[j].price * p.tauxAchatCHF, 0)
           const nowCost = nowActivePosns.reduce((s, p) => s + (p.quantite > 0 ? p.coutCHF : -p.coutCHF), 0)
-          result.push({ x: 1, cost: nowCost, value: nowValue, valueNoFX: nowValueNoFX, label: 'Maintenant' })
+          result.push({ x: 1, cost: nowCost, value: nowValue, valueNoFX: nowValueNoFX, label: 'Actuel' })
         }
       }
       // Normaliser la valeur actuelle pour qu'elle parte du même point que la valeur investie
@@ -1784,8 +1806,7 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
             <line x1={mx} y1={PAD.t} x2={mx} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
             {showValeur && <circle cx={px(hovered.x)} cy={py(hovered.value)} r="4" fill={g >= 0 ? '#14B8A6' : '#EF4444'} />}
             <g transform={`translate(${lx}, ${ly})`}>
-              <rect x="-22" y="-9" width="44" height="18" rx="4" fill="#0f1f18" stroke="#2D4A38" strokeWidth="0.6" opacity="0.92" />
-              <text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="500" fill="#B8B3AB">{hovered.label}</text>
+              {(() => { const lw = Math.round(hovered.label.length * 5.4 + 14); return (<><rect x={-lw/2} y="-9" width={lw} height="18" rx="3" style={{fill:'var(--chart-lbl-bg)'}} opacity="0.95" /><text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="600" style={{fill:'var(--chart-lbl-text)'}}>{hovered.label}</text></>) })()}
             </g>
           </g>
         )
@@ -2043,7 +2064,8 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
         }
 
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
-        const label = (interval === '5min') ? fmtTime(dateStr) : (interval === '1h' || interval === '4h') ? fmtHourDay(dateStr) : range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
+        const _spanMs = dateFrom ? (new Date(dateTo ?? today).getTime() - new Date(dateFrom).getTime()) : Infinity
+        const label = (interval === '5min') ? fmtTime(dateStr) : (interval === '1h' || interval === '4h') ? fmtHourDayFull(dateStr) : range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : (timePeriod === '1Y' || (timePeriod === 'Max' && _spanMs > 365 * 24 * 3600 * 1000)) ? fmtDayMonthYear(dateStr) : fmtDayMonth(dateStr)
         result.push({ x: isToday ? 1 : t, nominal, reel, reelKnown: cpiDateKnown(evalDateStr), nominalNoFX, cost, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
       }
@@ -2073,7 +2095,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
               nowReel       += valCHF - pp.coutCHF * (1 + inflationBetween(pp.dateAchat, today))
             }
           }
-          result.push({ x: 1, nominal: nowNominal, reel: nowReel, reelKnown: cpiDateKnown(today), nominalNoFX: nowNominalNoFX, cost: nowCost, label: 'Maintenant' })
+          result.push({ x: 1, nominal: nowNominal, reel: nowReel, reelKnown: cpiDateKnown(today), nominalNoFX: nowNominalNoFX, cost: nowCost, label: 'Actuel' })
         }
       }
       // Normaliser le premier point à 0 pour les modes mensuel et hebdomadaire
@@ -2392,8 +2414,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
             {showReelChart && hov.reelKnown && <circle cx={px(hov.x)} cy={py(rr(hov.reel))} r="4" fill="#1B5C80" />}
             {showNominal && <circle cx={px(hov.x)} cy={py(hov.nominal)} r="4" fill={hov.nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} />}
             <g transform={`translate(${lx},${ly})`}>
-              <rect x="-22" y="-9" width="44" height="18" rx="4" fill="#0f1f18" stroke="#2D4A38" strokeWidth="0.6" opacity="0.92" />
-              <text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="500" fill="#B8B3AB">{hov.label}</text>
+              {(() => { const lw = Math.round(hov.label.length * 5.4 + 14); return (<><rect x={-lw/2} y="-9" width={lw} height="18" rx="3" style={{fill:'var(--chart-lbl-bg)'}} opacity="0.95" /><text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="600" style={{fill:'var(--chart-lbl-text)'}}>{hov.label}</text></>) })()}
             </g>
           </g>
         )
@@ -2406,7 +2427,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
 
 
 // ─── Chart: Drawdown ─────────────────────────────────────────────────────────
-const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, range, interval = '1day', dateFrom, dateTo, bustKey = 0, downsampleEvery = 1 }: { data: PositionCalc[]; onMaxDrawdown?: (pct: number, date: string) => void; range?: 'all' | '60d' | 'weekly'; interval?: '1day' | '1h' | '4h' | '5min'; dateFrom?: string; dateTo?: string; bustKey?: number; downsampleEvery?: number }) {
+const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, range, interval = '1day', dateFrom, dateTo, bustKey = 0, downsampleEvery = 1, timePeriod }: { data: PositionCalc[]; onMaxDrawdown?: (pct: number, date: string) => void; range?: 'all' | '60d' | 'weekly'; interval?: '1day' | '1h' | '4h' | '5min'; dateFrom?: string; dateTo?: string; bustKey?: number; downsampleEvery?: number; timePeriod?: '1D' | '1W' | '1M' | 'YTD' | '1Y' | 'Max' }) {
   const H = 195, PAD = { t: 10, r: 10, b: 10, l: 10 }
 
   const [ddPts, setDdPts] = useState<{ x: number; dd: number; label: string }[] | null>(null)
@@ -2780,7 +2801,8 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
         if (unitV > peakUnitV) peakUnitV = unitV
 
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
-        const label = (interval === '5min') ? fmtTime(dateStr) : (interval === '1h' || interval === '4h') ? fmtHourDay(dateStr) : range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
+        const _spanMs = dateFrom ? (new Date(dateTo ?? today).getTime() - new Date(dateFrom).getTime()) : Infinity
+        const label = (interval === '5min') ? fmtTime(dateStr) : (interval === '1h' || interval === '4h') ? fmtHourDayFull(dateStr) : range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : (timePeriod === '1Y' || (timePeriod === 'Max' && _spanMs > 365 * 24 * 3600 * 1000)) ? fmtDayMonthYear(dateStr) : fmtDayMonth(dateStr)
         const dd = peakUnitV > 0 ? ((unitV - peakUnitV) / peakUnitV) * 100 : 0
         result.push({ x: isToday ? 1 : t, dd, label })
       }
@@ -2836,7 +2858,7 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
             const nowUnitV = nowPortfolioV / nowTotalUnits
             const nowPeak = Math.max(peakUnitV, nowUnitV)
             const nowDD = nowPeak > 0 ? ((nowUnitV - nowPeak) / nowPeak) * 100 : 0
-            result.push({ x: 1, dd: nowDD, label: 'Maintenant' })
+            result.push({ x: 1, dd: nowDD, label: 'Actuel' })
           }
         }
       }
@@ -2882,20 +2904,27 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
   return (
     <>
     {/* ── Stat header ── */}
-    <div className="mb-3 min-h-[52px] px-5">
-      {_ddDisp ? (
-        <>
+    <div className="mb-3 min-h-[52px] px-5 flex items-start justify-between">
+      <div>
+        {_ddDisp ? (
           <div className="flex items-baseline gap-2">
             <span className="text-2xl font-bold tabular-nums text-[#EF4444]">
               {_ddDisp.dd.toFixed(2)}%
             </span>
-            <span className="text-sm text-[#9E9A93]">drawdown</span>
           </div>
-          {hovered && (
-            <div className="text-xs text-[#9E9A93] mt-0.5">{hovered.label}</div>
-          )}
-        </>
-      ) : null}
+        ) : null}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+        <span className="relative inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-[#EDEAE4] dark:bg-[#323B4A] text-[#9E9A93] text-[9px] font-bold cursor-help group/tipDD">
+          ?
+          <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 px-2.5 py-2 bg-[#EDEAE4] dark:bg-[#323B4A] text-[#4B4945] dark:text-[#C8C4BC] text-[10px] rounded shadow-md opacity-0 group-hover/tipDD:opacity-100 transition-opacity z-50 leading-relaxed space-y-1.5">
+            <span className="flex items-center gap-2 whitespace-nowrap">
+              <svg width="20" height="10" className="flex-shrink-0"><path d="M0,2 Q10,10 20,2" fill="none" stroke="#EF4444" strokeWidth="1.5" /></svg>
+              <span><span className="font-semibold">Drawdown</span> — recul depuis le plus haut</span>
+            </span>
+          </span>
+        </span>
+      </div>
     </div>
     {isZoomedDd && (
       <div className="flex justify-end mb-1 px-5">
@@ -2980,8 +3009,7 @@ const DrawdownChart = React.memo(function DrawdownChart({ data, onMaxDrawdown, r
             const ly = labelAbove ? py(hovered.dd) + 20 : py(hovered.dd) - 28
             return (
               <g transform={`translate(${lx}, ${ly})`}>
-                <rect x="-22" y="-9" width="44" height="18" rx="4" fill="#221010" stroke="#5A2020" strokeWidth="0.6" opacity="0.92" />
-                <text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="500" fill="#B8AEA8">{hovered.label}</text>
+                {(() => { const lw = Math.round(hovered.label.length * 5.4 + 14); return (<><rect x={-lw/2} y="-9" width={lw} height="18" rx="3" style={{fill:'var(--chart-lbl-bg)'}} opacity="0.95" /><text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="600" style={{fill:'var(--chart-lbl-text)'}}>{hovered.label}</text></>) })()}
               </g>
             )
           })()}
@@ -5515,6 +5543,13 @@ export default function PortfolioPage() {
     })
     const tickersStr = Array.from(tickerSet).join(',')
 
+    // Invalide priceCache MAINTENANT (synchrone) pour que le re-rendu du chart
+    // déclenché par setChartBustKey trouve le cache vide et fetche des prix frais
+    for (const p of active) {
+      priceCache.delete(`${p.ticker}|${p.devise}|now`)
+      priceCache.delete(`${p.ticker.toUpperCase()}|${p.devise}|now`)
+    }
+
     let histData: Record<string, HistEntry> = {}
     try {
       // Passe bust=true : invalide le cache par ticker et force un rafraîchissement
@@ -5567,26 +5602,16 @@ export default function PortfolioPage() {
       }).eq('id', p.id).eq('user_id', userId)))
     }
 
-    // Synchronise livePricesMap avec les prix fraîchement récupérés
-    // → positionsCalc / allPositionsCalc (positions, catégories, PnL) reflètent
-    //   immédiatement la valeur "Maintenant" des graphiques
+    // Synchronise livePricesMap via fetchPriceCached (même source que EvolChart "Maintenant")
+    // → positions ouvertes, allocation et PnL affichent exactement les mêmes prix temps réel
+    const liveEntries = await Promise.all(active.map(async p => {
+      const d = await fetchPriceCached(p.ticker, p.devise, undefined)
+      return { key: `${p.ticker.toUpperCase()}|${p.devise}`, data: d }
+    }))
     setLivePricesMap(prev => {
       const next = new Map(prev)
-      for (const p of active) {
-        const key = p.ticker.trim().toUpperCase()
-        const h = histData[key]
-        if (!h || h.closes.length === 0) continue
-        const freshPrice = h.closes[h.closes.length - 1]
-        const fxKey = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
-        const hFx = fxKey ? histData[fxKey.toUpperCase()] : null
-        const freshFx = hFx && hFx.closes.length > 0
-          ? hFx.closes[hFx.closes.length - 1]
-          : (p.devise !== 'CHF' ? (fallbackFxRates.get(p.devise) ?? p.tauxActuelCHF) : 1)
-        const liveKey = `${p.ticker.toUpperCase()}|${p.devise}`
-        next.set(liveKey, { price: freshPrice, fxRate: freshFx })
-        // Invalide priceCache pour que le prochain fetchPriceCached retourne les données fraîches
-        priceCache.delete(`${p.ticker}|${p.devise}|now`)
-        priceCache.delete(`${p.ticker.toUpperCase()}|${p.devise}|now`)
+      for (const e of liveEntries) {
+        if (e.data) next.set(e.key, e.data)
       }
       return next
     })
@@ -6242,7 +6267,7 @@ export default function PortfolioPage() {
 
                   {chartMode === 'evol' && <EvolChart data={positionsCalc} showFX={true} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} timePeriod={timePeriod} />}
                   {chartMode === 'pnl' && <PnLChart data={positionsCalc} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} timePeriod={timePeriod} />}
-                  {chartMode === 'drawdown' && <DrawdownChart data={positionsCalc} onMaxDrawdown={(pct, date) => setMaxDrawdown({ pct, date })} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} />}
+                  {chartMode === 'drawdown' && <DrawdownChart data={positionsCalc} onMaxDrawdown={(pct, date) => setMaxDrawdown({ pct, date })} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} timePeriod={timePeriod} />}
                   </div>{/* end px-5 pt-4 pb-5 wrapper */}
 
                 </div>
