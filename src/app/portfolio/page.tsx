@@ -1337,7 +1337,7 @@ function makeLookupClose(histJson: Record<string, { dates: string[]; closes: num
 }
 
 // ─── Chart: Evolution ─────────────────────────────────────────────────────────
-const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval = '1day', dateFrom, dateTo, bustKey = 0, downsampleEvery = 1 }: { data: PositionCalc[]; showFX?: boolean; range?: 'all' | '60d' | 'weekly'; interval?: '1day' | '1h' | '4h' | '5min'; dateFrom?: string; dateTo?: string; bustKey?: number; downsampleEvery?: number }) {
+const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval = '1day', dateFrom, dateTo, bustKey = 0, downsampleEvery = 1, timePeriod }: { data: PositionCalc[]; showFX?: boolean; range?: 'all' | '60d' | 'weekly'; interval?: '1day' | '1h' | '4h' | '5min'; dateFrom?: string; dateTo?: string; bustKey?: number; downsampleEvery?: number; timePeriod?: '1D' | '1W' | '1M' | 'YTD' | '1Y' | 'Max' }) {
   const H = 200, PAD = { t: 10, r: 10, b: 10, l: 10 }
 
   const [monthlyPts, setMonthlyPts] = useState<{ x: number; cost: number; value: number; valueNoFX: number; label: string }[] | null>(null)
@@ -1345,6 +1345,7 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
   const [progress, setProgress] = useState(0)
   const showInvesti = true
   const showValeur = true
+  const horsFXAllowed = timePeriod !== '1D' && timePeriod !== '1W'
   const [showHorsFX, setShowHorsFX] = useState(false)
   // Réinitialise Hors FX à chaque changement de période / intervalle
   React.useEffect(() => { setShowHorsFX(false) }, [range, dateFrom, dateTo])
@@ -1626,7 +1627,7 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
                 {_dispGain >= 0 ? '+' : ''}{_dispGain.toFixed(2)} CHF
                 {' '}({_dispGain >= 0 ? '+' : ''}{_dispGainPct.toFixed(2)}%)
               </span>
-              {showHorsFX && _dispPt && (
+              {horsFXAllowed && showHorsFX && _dispPt && (
                 <span className={`text-sm font-semibold tabular-nums text-[#1B5C80]`}>
                   Hors FX {_dispGainNoFX >= 0 ? '+' : ''}{_dispGainNoFX.toFixed(2)} CHF
                   {_dispPt.cost > 0 && <> ({_dispGainNoFX >= 0 ? '+' : ''}{_dispGainNoFXPct.toFixed(2)}%)</>}
@@ -1640,11 +1641,13 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
         ) : null}
       </div>
       <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+        {horsFXAllowed && (
         <button type="button" onClick={() => setShowHorsFX(v => !v)}
           className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-all ${showHorsFX ? 'border-[#1B5C80] bg-[#F5F3EF] dark:bg-[#1E2530]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-40'}`}>
           <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="6 3" opacity="0.7" /></svg>
           <span style={{ color: '#1B5C80' }}>Hors FX</span>
         </button>
+        )}
         <span className="relative inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-[#EDEAE4] dark:bg-[#323B4A] text-[#9E9A93] text-[9px] font-bold cursor-help group/tipEvol">
           ?
           <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 px-2.5 py-2 bg-[#EDEAE4] dark:bg-[#323B4A] text-[#4B4945] dark:text-[#C8C4BC] text-[10px] rounded shadow-md opacity-0 group-hover/tipEvol:opacity-100 transition-opacity z-50 leading-relaxed space-y-1.5">
@@ -1652,10 +1655,12 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
               <svg width="20" height="10" className="flex-shrink-0"><line x1="0" y1="5" x2="10" y2="5" stroke="#14B8A6" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#EF4444" strokeWidth="2" /></svg>
               <span><span className="font-semibold">Valeur actuelle</span> — valeur totale du portefeuille</span>
             </span>
+            {horsFXAllowed && (
             <span className="flex items-center gap-2 whitespace-nowrap">
               <svg width="20" height="10" className="flex-shrink-0"><line x1="0" y1="5" x2="20" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="5 3" /></svg>
               <span><span className="font-semibold">Hors FX</span> — FX figé au taux d&apos;achat</span>
             </span>
+            )}
           </span>
         </span>
       </div>
@@ -1725,7 +1730,7 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
       <g clipPath="url(#eg-clip)">
       {showValeur && gainD && <path d={gainD} fill="none" />}
       {showValeur && lossD && <path d={lossD} fill="none" />}
-      {showHorsFX && <path
+      {horsFXAllowed && showHorsFX && <path
           d={points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${px(p.x)} ${py(p.valueNoFX)}`).join(' ')}
           fill="none" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="6 3" opacity="0.7"
         />}
@@ -6212,7 +6217,7 @@ export default function PortfolioPage() {
                   <div className="h-px bg-[#DDD9D1] dark:bg-[#253040] mx-5 mt-3 mb-0" />
                   <div className="pb-5 pt-4">
 
-                  {chartMode === 'evol' && <EvolChart data={positionsCalc} showFX={true} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} />}
+                  {chartMode === 'evol' && <EvolChart data={positionsCalc} showFX={true} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} timePeriod={timePeriod} />}
                   {chartMode === 'pnl' && <PnLChart data={positionsCalc} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} timePeriod={timePeriod} />}
                   {chartMode === 'drawdown' && <DrawdownChart data={positionsCalc} onMaxDrawdown={(pct, date) => setMaxDrawdown({ pct, date })} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} />}
                   </div>{/* end px-5 pt-4 pb-5 wrapper */}
