@@ -2078,8 +2078,8 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
   const firstVisP = visPtsP[0] ?? points[0]
   // 1A : offset visuel uniquement — décale la courbe réelle au rendu sans toucher aux données
   // Le header continue d'afficher _pnlDisp.reel - anchorReel (valeur absolue depuis l'achat)
-  const reelRenderOffset = (timePeriod === '1Y' && points && points.length > 0)
-    ? (() => { const r = points.find(p => p.reelKnown && p.cost > 0) ?? points.find(p => p.reelKnown); return r ? r.reel - r.nominal : 0 })()
+  const reelRenderOffset = (timePeriod === '1Y' && visPtsPReel.length > 0)
+    ? visPtsPReel[0].reel - visPtsPReel[0].nominal
     : 0
   const rr = (v: number) => v - reelRenderOffset
   const scalePtsP = isZoomedPnl && visPtsP.length > 1 ? visPtsP : points
