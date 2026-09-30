@@ -5417,7 +5417,7 @@ export default function PortfolioPage() {
           {lastMaj && (
             <p className="text-xs text-[#9E9A93] mt-1">
               Dernière mise à jour : {new Date(lastMaj).toLocaleString('fr-CH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-              {' '}· Données Twelve Data (délai ~15 min)
+              {' '}· Données Twelve Data
             </p>
           )}
 
