@@ -640,6 +640,10 @@ const CPI_MONTHLY: Record<string, number> = {
   '2026-08': 108.6,
 }
 
+// Première/dernière clé connue (pour le fallback hors-plage)
+const _CPI_FIRST = '1982-01'
+const _CPI_LAST  = '2026-08'
+
 function cpiAt(dateStr: string): number {
   const d  = new Date(dateStr)
   const y  = d.getFullYear()
@@ -647,10 +651,16 @@ function cpiAt(dateStr: string): number {
   const key  = `${y}-${String(mo + 1).padStart(2, '0')}`
   const keyN = mo === 11 ? `${y + 1}-01` : `${y}-${String(mo + 2).padStart(2, '0')}`
   const v0 = CPI_MONTHLY[key]
-  if (v0 === undefined) return CPI_MONTHLY[Object.keys(CPI_MONTHLY).sort()[0]] ?? 100
+  if (v0 === undefined) return key < _CPI_FIRST ? CPI_MONTHLY[_CPI_FIRST]! : CPI_MONTHLY[_CPI_LAST]!
   const v1 = CPI_MONTHLY[keyN] ?? v0
   const days = new Date(y, mo + 1, 0).getDate()
   return v0 + ((d.getDate() - 1) / days) * (v1 - v0)
+}
+/** Vrai si la date est dans la plage de données IPC connues */
+function cpiDateKnown(dateStr: string): boolean {
+  const d = new Date(dateStr)
+  const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  return key <= _CPI_LAST
 }
 function inflationCumulee(dateAchat: string): number {
   return cpiAt(new Date().toISOString().slice(0, 10)) / cpiAt(dateAchat) - 1
@@ -1748,12 +1758,12 @@ function inflationBetween(dateAchat: string, dateTo: string): number {
   return cpiAt(dateTo) / cpiAt(dateAchat) - 1
 }
 
-const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', dateFrom, dateTo, bustKey = 0, downsampleEvery = 1 }: { data: PositionCalc[]; range?: 'all' | '60d' | 'weekly'; interval?: '1day' | '1h' | '4h' | '5min'; dateFrom?: string; dateTo?: string; bustKey?: number; downsampleEvery?: number }) {
+const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', dateFrom, dateTo, bustKey = 0, downsampleEvery = 1, timePeriod }: { data: PositionCalc[]; range?: 'all' | '60d' | 'weekly'; interval?: '1day' | '1h' | '4h' | '5min'; dateFrom?: string; dateTo?: string; bustKey?: number; downsampleEvery?: number; timePeriod?: '1D' | '1W' | '1M' | 'YTD' | '1Y' | 'Max' }) {
   const [showNominal, setShowNominal] = useState(true)
   const [showReel, setShowReel] = useState(false)
   const H = 200, PAD = { t: 10, r: 10, b: 10, l: 10 }
 
-  const [monthlyPts, setMonthlyPts] = useState<{ x: number; nominal: number; reel: number; nominalNoFX: number; cost: number; label: string }[] | null>(null)
+  const [monthlyPts, setMonthlyPts] = useState<{ x: number; nominal: number; reel: number; reelKnown: boolean; nominalNoFX: number; cost: number; label: string }[] | null>(null)
   const [anchorNominal, setAnchorNominal] = useState<number>(0)
   const [anchorReel, setAnchorReel] = useState<number>(0)
   const [loading, setLoading] = useState(false)
@@ -1856,7 +1866,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
 
     async function fetchAll() {
       const today = new Date().toISOString().slice(0, 10)
-      const result: { x: number; nominal: number; reel: number; nominalNoFX: number; cost: number; label: string }[] = []
+      const result: { x: number; nominal: number; reel: number; reelKnown: boolean; nominalNoFX: number; cost: number; label: string }[] = []
 
       // ─── Bulk history (évite N×M appels /api/prices) ──────────────────────
       const allTickers = [...new Set(data.map(p => p.ticker.toUpperCase()))]
@@ -1937,10 +1947,10 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
           if ((range === 'all' || range === 'weekly') && result.length === 0) {
             const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
             const label = range === 'weekly' ? fmtDate(dateStr) : fmtMonth(dateStr)
-            result.push({ x: t, nominal: 0, reel: 0, nominalNoFX: 0, cost: 0, label })
+            result.push({ x: t, nominal: 0, reel: 0, reelKnown: false, nominalNoFX: 0, cost: 0, label })
           } else if (interval === '1day' && result.length === 0 && i === 0) {
             // YTD/1M/1Y : pas de positions à la date de départ → ancrer le premier point au niveau de référence
-            result.push({ x: 0, nominal: anchorNomValue, reel: anchorReelValue, nominalNoFX: anchorNomNoFXValue, cost: 0, label: fmtDay(dateStr) })
+            result.push({ x: 0, nominal: anchorNomValue, reel: anchorReelValue, reelKnown: cpiDateKnown(dateStr), nominalNoFX: anchorNomNoFXValue, cost: 0, label: fmtDay(dateStr) })
           }
           setProgress(Math.round((i + 1) / dates.length * 100)); continue
         }
@@ -1989,7 +1999,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
 
         const t = (new Date(dateStr).getTime() - firstDate.getTime()) / totalMs
         const label = (interval === '5min') ? fmtTime(dateStr) : (interval === '1h' || interval === '4h') ? fmtHourDay(dateStr) : range === 'all' ? fmtMonth(dateStr) : range === 'weekly' ? fmtDate(dateStr) : fmtDay(dateStr)
-        result.push({ x: isToday ? 1 : t, nominal, reel, nominalNoFX, cost, label })
+        result.push({ x: isToday ? 1 : t, nominal, reel, reelKnown: cpiDateKnown(evalDateStr), nominalNoFX, cost, label })
         setProgress(Math.round((i + 1) / dates.length * 100))
       }
       // ─── Point temps réel (valeur actuelle précise via fetchPriceCached) ──────────
@@ -2018,7 +2028,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
               nowReel       += valCHF - pp.coutCHF * (1 + inflationBetween(pp.dateAchat, today))
             }
           }
-          result.push({ x: 1, nominal: nowNominal, reel: nowReel, nominalNoFX: nowNominalNoFX, cost: nowCost, label: 'Maintenant' })
+          result.push({ x: 1, nominal: nowNominal, reel: nowReel, reelKnown: cpiDateKnown(today), nominalNoFX: nowNominalNoFX, cost: nowCost, label: 'Maintenant' })
         }
       }
       // Normaliser le premier point à 0 pour les modes mensuel et hebdomadaire
@@ -2064,6 +2074,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
   const zP = zoomWPnl
   const isZoomedPnl = zP[0] > 0.001 || zP[1] < 0.999
   const visPtsP = points.filter(p => p.x >= zP[0] - 0.001 && p.x <= zP[1] + 0.001)
+  const visPtsPReel = visPtsP.filter(p => p.reelKnown)
   const firstVisP = visPtsP[0] ?? points[0]
   const scalePtsP = isZoomedPnl && visPtsP.length > 1 ? visPtsP : points
   const allValsVis = scalePtsP.flatMap(p => {
@@ -2089,7 +2100,8 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
   const zeroY = py(0)
 
   const nomAreas = showNominal ? buildColoredAreas(points.map(p => ({ x: p.x, val: p.nominal, base: anchorNominal })), px, py) : { gainD: '', lossD: '' }
-  const reelAreas = showReel ? buildColoredAreas(points.map(p => ({ x: p.x, val: p.reel, base: 0 })), px, py) : { gainD: '', lossD: '' }
+  const reelKnownPts = points.filter(p => p.reelKnown)
+  const reelAreas = showReel ? buildColoredAreas(reelKnownPts.map(p => ({ x: p.x, val: p.reel, base: 0 })), px, py) : { gainD: '', lossD: '' }
   const lastVisP = visPtsP[visPtsP.length - 1] ?? points[points.length - 1]
 
   const _pnlDisp = hoverIdxPnl !== null ? points[hoverIdxPnl] : points[points.length - 1]
@@ -2138,11 +2150,13 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
           <svg width="20" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="#14B8A6" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#EF4444" strokeWidth="2" /></svg>
           <span className="text-[#9E9A93]">Nominal</span>
         </button>
+        {!['1D', '1W', '1M'].includes(timePeriod ?? '') && (
         <button type="button" onClick={() => setShowReel(v => !v)}
           className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-all ${showReel ? 'border-[#1B5C80] bg-[#F5F3EF] dark:bg-[#1E2530]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-40'}`}>
           <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="5 3" /></svg>
           <span className="text-[#9E9A93]">Réel</span>
         </button>
+        )}
         <span className="relative inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-[#EDEAE4] dark:bg-[#323B4A] text-[#9E9A93] text-[9px] font-bold cursor-help group/tipPnl">
           ?
           <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 px-2 py-1 bg-[#1B3050] dark:bg-[#253040] text-white text-[10px] rounded opacity-0 group-hover/tipPnl:opacity-100 transition-opacity z-50 leading-relaxed">
@@ -2248,8 +2262,8 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
               if (col !== curColor) { flush(); curColor = col; curPts = [[x1,y1],[x2,y2]] }
               else { if (curPts.length === 0) curPts = [[x1,y1]]; curPts.push([x2,y2]) }
             }
-            points.slice(0, -1).forEach((p0, i) => {
-              const p1 = points[i + 1]
+            visPtsPReel.slice(0, -1).forEach((p0, i) => {
+              const p1 = visPtsPReel[i + 1]
               addSeg(px(p0.x), py(p0.reel), px(p1.x), py(p1.reel), '#1B5C80')
             })
             flush()
@@ -2303,7 +2317,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
 
       </g>
       <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="7" fill="none" stroke={points[points.length-1].nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="4" fill={points[points.length-1].nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} /></>
-      {showReel && <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="5.5" fill="none" stroke="#1B5C80" strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="3.5" fill="#1B5C80" /></>}
+      {showReel && points[points.length-1]?.reelKnown && <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="5.5" fill="none" stroke="#1B5C80" strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="3.5" fill="#1B5C80" /></>}
       {hoverIdxPnl !== null && (() => {
         const hov = points[hoverIdxPnl]
         const mx = hoverMxPnl ?? px(hov.x)
@@ -2315,7 +2329,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
           <g>
             <line x1={mx} y1={PAD.t} x2={mx} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
             {showNominal && <circle cx={px(hov.x)} cy={py(hov.nominal)} r="4" fill={hov.nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} />}
-            {showReel && <circle cx={px(hov.x)} cy={py(hov.reel)} r="4" fill="#1B5C80" />}
+            {showReel && hov.reelKnown && <circle cx={px(hov.x)} cy={py(hov.reel)} r="4" fill="#1B5C80" />}
             <g transform={`translate(${lx},${ly})`}>
               <rect x="-22" y="-9" width="44" height="18" rx="4" fill="#0f1f18" stroke="#2D4A38" strokeWidth="0.6" opacity="0.92" />
               <text x="0" y="4" textAnchor="middle" fontSize="9" fontWeight="500" fill="#B8B3AB">{hov.label}</text>
@@ -6118,7 +6132,7 @@ export default function PortfolioPage() {
                   <div className="pb-5 pt-4">
 
                   {chartMode === 'evol' && <EvolChart data={positionsCalc} showFX={true} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} />}
-                  {chartMode === 'pnl' && <PnLChart data={positionsCalc} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} />}
+                  {chartMode === 'pnl' && <PnLChart data={positionsCalc} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} timePeriod={timePeriod} />}
                   {chartMode === 'drawdown' && <DrawdownChart data={positionsCalc} onMaxDrawdown={(pct, date) => setMaxDrawdown({ pct, date })} range={chartRange} interval={chartInterval} dateFrom={chartDateFrom || undefined} dateTo={chartDateTo || undefined} bustKey={chartBustKey} downsampleEvery={chartDownsample} />}
                   </div>{/* end px-5 pt-4 pb-5 wrapper */}
 
