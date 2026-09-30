@@ -2086,7 +2086,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
   const allValsVis = scalePtsP.flatMap(p => {
     const arr: number[] = []
     if (showNominal) arr.push(p.nominal)
-    if (showReel) arr.push(rr(p.reel))
+    if (showReelChart) arr.push(rr(p.reel))
     return arr
   })
   const allValsFallbackVis = allValsVis.length ? allValsVis : scalePtsP.flatMap(p => [p.nominal])
@@ -2105,9 +2105,11 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
   const tickVals = Array.from({ length: Math.round((maxVVis - minVVis) / niceStepVis) + 1 }, (_, i) => minVVis + i * niceStepVis)
   const zeroY = py(0)
 
+  // Affiche la courbe réelle sauf sur 1J/1S/1M
+  const showReelChart = showReel && !['1D', '1W', '1M'].includes(timePeriod ?? '')
   const nomAreas = showNominal ? buildColoredAreas(points.map(p => ({ x: p.x, val: p.nominal, base: anchorNominal })), px, py) : { gainD: '', lossD: '' }
   const reelKnownPts = points.filter(p => p.reelKnown)
-  const reelAreas = showReel ? buildColoredAreas(reelKnownPts.map(p => ({ x: p.x, val: rr(p.reel), base: 0 })), px, py) : { gainD: '', lossD: '' }
+  const reelAreas = showReelChart ? buildColoredAreas(reelKnownPts.map(p => ({ x: p.x, val: rr(p.reel), base: 0 })), px, py) : { gainD: '', lossD: '' }
   const lastVisP = visPtsP[visPtsP.length - 1] ?? points[points.length - 1]
 
   const _pnlDisp = hoverIdxPnl !== null ? points[hoverIdxPnl] : points[points.length - 1]
@@ -2252,7 +2254,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
       {(() => { const ancY = py(anchorNominal); return ancY >= PAD.t && ancY <= PAD.t + iH ? (
         <line x1={PAD.l} y1={ancY} x2={W - PAD.r} y2={ancY} stroke="var(--finv-cost-line)" strokeWidth="1" strokeDasharray="6 3" />
       ) : null })()}
-      {showReel && (
+      {showReelChart && (
         <>
 
           {(() => {
@@ -2331,18 +2333,18 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
 
       </g>
       {showNominal && <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="7" fill="none" stroke={points[points.length-1].nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="4" fill={points[points.length-1].nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} /></>}
-      {showReel && points[points.length-1]?.reelKnown && <><circle cx={px(points[points.length-1].x)} cy={py(rr(points[points.length-1].reel))} r="5.5" fill="none" stroke="#1B5C80" strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(rr(points[points.length-1].reel))} r="3.5" fill="#1B5C80" /></>}
+      {showReelChart && points[points.length-1]?.reelKnown && <><circle cx={px(points[points.length-1].x)} cy={py(rr(points[points.length-1].reel))} r="5.5" fill="none" stroke="#1B5C80" strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(rr(points[points.length-1].reel))} r="3.5" fill="#1B5C80" /></>}
       {hoverIdxPnl !== null && (() => {
         const hov = points[hoverIdxPnl]
         const mx = hoverMxPnl ?? px(hov.x)
-        const refV = showNominal ? hov.nominal : showReel ? rr(hov.reel) : 0
+        const refV = showNominal ? hov.nominal : showReelChart ? rr(hov.reel) : 0
         const lx = Math.min(Math.max(mx, PAD.l + 22), W - PAD.r - 22)
         const labelAbove = py(refV) < PAD.t + 28
         const ly = labelAbove ? py(refV) + 20 : py(refV) - 28
         return (
           <g>
             <line x1={mx} y1={PAD.t} x2={mx} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
-            {showReel && hov.reelKnown && <circle cx={px(hov.x)} cy={py(rr(hov.reel))} r="4" fill="#1B5C80" />}
+            {showReelChart && hov.reelKnown && <circle cx={px(hov.x)} cy={py(rr(hov.reel))} r="4" fill="#1B5C80" />}
             {showNominal && <circle cx={px(hov.x)} cy={py(hov.nominal)} r="4" fill={hov.nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} />}
             <g transform={`translate(${lx},${ly})`}>
               <rect x="-22" y="-9" width="44" height="18" rx="4" fill="#0f1f18" stroke="#2D4A38" strokeWidth="0.6" opacity="0.92" />
