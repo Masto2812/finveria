@@ -2036,10 +2036,16 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
         const off = { nominal: result[0].nominal, reel: result[0].reel, nominalNoFX: result[0].nominalNoFX }
         for (const pt of result) { pt.nominal -= off.nominal; pt.reel -= off.reel; pt.nominalNoFX -= off.nominalNoFX }
       }
-      // 1A : aligner le premier point réel sur nominal (inflation relative à la période, pas à l'achat)
+      // 1A : aligner le premier point réel visible sur nominal (inflation relative au début de la période)
       if (timePeriod === '1Y' && result.length > 0) {
-        const reelOffset = result[0].reel - result[0].nominal
-        for (const pt of result) { pt.reel -= reelOffset }
+        const firstReel = result.find(p => p.reelKnown)
+        if (firstReel && firstReel.reel !== 0) {
+          const factor = firstReel.nominal / firstReel.reel
+          for (const pt of result) { pt.reel *= factor }
+        } else if (firstReel) {
+          const offset = firstReel.reel - firstReel.nominal
+          for (const pt of result) { pt.reel -= offset }
+        }
       }
       // YTD/1M/1Y : ancrer la courbe au bord gauche avec la première vraie valeur
       if (interval === '1day' && dateFrom && result.length > 0 && result[0].x > 0.001) {
