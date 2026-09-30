@@ -2036,15 +2036,6 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
         const off = { nominal: result[0].nominal, reel: result[0].reel, nominalNoFX: result[0].nominalNoFX }
         for (const pt of result) { pt.nominal -= off.nominal; pt.reel -= off.reel; pt.nominalNoFX -= off.nominalNoFX }
       }
-      // 1A : aligner le premier point réel sur nominal (inflation relative au début de la période, pas à l'achat)
-      // On cherche le 1er vrai point de données (cost > 0) car result[0] peut être un ancrage vide (cost=0)
-      if (timePeriod === '1Y' && result.length > 0) {
-        const firstRef = result.find(p => p.reelKnown && p.cost > 0) ?? result.find(p => p.reelKnown)
-        if (firstRef) {
-          const offset = firstRef.reel - firstRef.nominal
-          for (const pt of result) { pt.reel -= offset }
-        }
-      }
       // YTD/1M/1Y : ancrer la courbe au bord gauche avec la première vraie valeur
       if (interval === '1day' && dateFrom && result.length > 0 && result[0].x > 0.001) {
         result[0].x = 0
@@ -2085,11 +2076,17 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
   const visPtsP = points.filter(p => p.x >= zP[0] - 0.001 && p.x <= zP[1] + 0.001)
   const visPtsPReel = visPtsP.filter(p => p.reelKnown)
   const firstVisP = visPtsP[0] ?? points[0]
+  // 1A : offset visuel uniquement — décale la courbe réelle au rendu sans toucher aux données
+  // Le header continue d'afficher _pnlDisp.reel - anchorReel (valeur absolue depuis l'achat)
+  const reelRenderOffset = (timePeriod === '1Y' && points && points.length > 0)
+    ? (() => { const r = points.find(p => p.reelKnown && p.cost > 0) ?? points.find(p => p.reelKnown); return r ? r.reel - r.nominal : 0 })()
+    : 0
+  const rr = (v: number) => v - reelRenderOffset
   const scalePtsP = isZoomedPnl && visPtsP.length > 1 ? visPtsP : points
   const allValsVis = scalePtsP.flatMap(p => {
     const arr: number[] = []
     if (showNominal) arr.push(p.nominal)
-    if (showReel) arr.push(p.reel)
+    if (showReel) arr.push(rr(p.reel))
     return arr
   })
   const allValsFallbackVis = allValsVis.length ? allValsVis : scalePtsP.flatMap(p => [p.nominal])
@@ -2110,7 +2107,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
 
   const nomAreas = showNominal ? buildColoredAreas(points.map(p => ({ x: p.x, val: p.nominal, base: anchorNominal })), px, py) : { gainD: '', lossD: '' }
   const reelKnownPts = points.filter(p => p.reelKnown)
-  const reelAreas = showReel ? buildColoredAreas(reelKnownPts.map(p => ({ x: p.x, val: p.reel, base: 0 })), px, py) : { gainD: '', lossD: '' }
+  const reelAreas = showReel ? buildColoredAreas(reelKnownPts.map(p => ({ x: p.x, val: rr(p.reel), base: 0 })), px, py) : { gainD: '', lossD: '' }
   const lastVisP = visPtsP[visPtsP.length - 1] ?? points[points.length - 1]
 
   const _pnlDisp = hoverIdxPnl !== null ? points[hoverIdxPnl] : points[points.length - 1]
@@ -2279,7 +2276,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
             }
             visPtsPReel.slice(0, -1).forEach((p0, i) => {
               const p1 = visPtsPReel[i + 1]
-              addSeg(px(p0.x), py(p0.reel), px(p1.x), py(p1.reel), '#1B5C80')
+              addSeg(px(p0.x), py(rr(p0.reel)), px(p1.x), py(rr(p1.reel)), '#1B5C80')
             })
             flush()
             return runs.map((r, i) => <path key={i} d={rndPath(r.pts)} fill="none" stroke={r.color} strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round" />)
@@ -2332,18 +2329,18 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
 
       </g>
       {showNominal && <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="7" fill="none" stroke={points[points.length-1].nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].nominal)} r="4" fill={points[points.length-1].nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} /></>}
-      {showReel && points[points.length-1]?.reelKnown && <><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="5.5" fill="none" stroke="#1B5C80" strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(points[points.length-1].reel)} r="3.5" fill="#1B5C80" /></>}
+      {showReel && points[points.length-1]?.reelKnown && <><circle cx={px(points[points.length-1].x)} cy={py(rr(points[points.length-1].reel))} r="5.5" fill="none" stroke="#1B5C80" strokeWidth="1" strokeOpacity="0.35" /><circle cx={px(points[points.length-1].x)} cy={py(rr(points[points.length-1].reel))} r="3.5" fill="#1B5C80" /></>}
       {hoverIdxPnl !== null && (() => {
         const hov = points[hoverIdxPnl]
         const mx = hoverMxPnl ?? px(hov.x)
-        const refV = showNominal ? hov.nominal : showReel ? hov.reel : 0
+        const refV = showNominal ? hov.nominal : showReel ? rr(hov.reel) : 0
         const lx = Math.min(Math.max(mx, PAD.l + 22), W - PAD.r - 22)
         const labelAbove = py(refV) < PAD.t + 28
         const ly = labelAbove ? py(refV) + 20 : py(refV) - 28
         return (
           <g>
             <line x1={mx} y1={PAD.t} x2={mx} y2={H - PAD.b} stroke="#9E9A93" strokeWidth="0.8" strokeDasharray="3 2" />
-            {showReel && hov.reelKnown && <circle cx={px(hov.x)} cy={py(hov.reel)} r="4" fill="#1B5C80" />}
+            {showReel && hov.reelKnown && <circle cx={px(hov.x)} cy={py(rr(hov.reel))} r="4" fill="#1B5C80" />}
             {showNominal && <circle cx={px(hov.x)} cy={py(hov.nominal)} r="4" fill={hov.nominal >= anchorNominal ? '#14B8A6' : '#EF4444'} />}
             <g transform={`translate(${lx},${ly})`}>
               <rect x="-22" y="-9" width="44" height="18" rx="4" fill="#0f1f18" stroke="#2D4A38" strokeWidth="0.6" opacity="0.92" />
