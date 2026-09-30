@@ -5566,6 +5566,31 @@ export default function PortfolioPage() {
         prix_actuel: p.prixActuel, taux_actuel_chf: p.tauxActuelCHF, derniere_maj: p.derniereMaj ?? null,
       }).eq('id', p.id).eq('user_id', userId)))
     }
+
+    // Synchronise livePricesMap avec les prix fraîchement récupérés
+    // → positionsCalc / allPositionsCalc (positions, catégories, PnL) reflètent
+    //   immédiatement la valeur "Maintenant" des graphiques
+    setLivePricesMap(prev => {
+      const next = new Map(prev)
+      for (const p of active) {
+        const key = p.ticker.trim().toUpperCase()
+        const h = histData[key]
+        if (!h || h.closes.length === 0) continue
+        const freshPrice = h.closes[h.closes.length - 1]
+        const fxKey = p.devise !== 'CHF' ? `${p.devise}CHF=X` : null
+        const hFx = fxKey ? histData[fxKey.toUpperCase()] : null
+        const freshFx = hFx && hFx.closes.length > 0
+          ? hFx.closes[hFx.closes.length - 1]
+          : (p.devise !== 'CHF' ? (fallbackFxRates.get(p.devise) ?? p.tauxActuelCHF) : 1)
+        const liveKey = `${p.ticker.toUpperCase()}|${p.devise}`
+        next.set(liveKey, { price: freshPrice, fxRate: freshFx })
+        // Invalide priceCache pour que le prochain fetchPriceCached retourne les données fraîches
+        priceCache.delete(`${p.ticker}|${p.devise}|now`)
+        priceCache.delete(`${p.ticker.toUpperCase()}|${p.devise}|now`)
+      }
+      return next
+    })
+
     if (errCount > 0) setRefreshError(`${errCount} position(s) non mises à jour.`)
     setRefreshing(false)
   }
