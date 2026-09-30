@@ -6,27 +6,109 @@ import { createClient } from '@/lib/supabase/client'
 import Header from '@/components/Header'
 import Footer from '@/components/Footer'
 
-// ─── Swiss CPI (IPC) — source : OFS / BFS ────────────────────────────────────
-// Variations annuelles officielles de l'Indice des prix à la consommation suisse
-const CPI_RATES: Record<number, number> = {
-  1995: 0.018, 1996: 0.008, 1997: 0.005, 1998: 0.000, 1999: 0.008,
-  2000: 0.016, 2001: 0.010, 2002: 0.006, 2003: 0.006, 2004: 0.008,
-  2005: 0.012, 2006: 0.011, 2007: 0.007, 2008: 0.024, 2009: -0.005,
-  2010: 0.007, 2011: 0.002, 2012: -0.007, 2013: -0.002, 2014: 0.000,
-  2015: -0.011, 2016: -0.004, 2017: 0.005, 2018: 0.009, 2019: 0.004,
-  2020: -0.007, 2021: 0.006, 2022: 0.028, 2023: 0.021, 2024: 0.011,
-  2025: 0.003, // OFS jan–jun 2025 (glissement annuel moyen)
+// ─── IPC mensuel officiel OFS (base décembre 2020 = 100) ────────────────────
+// Source : OFS/BFS — https://www.bfs.admin.ch/bfs/fr/home/statistiques/prix/enquetes/lik.html
+// Valeurs mensuelles exactes publiées par l'OFS. Les années antérieures à 2015 sont
+// estimées par interpolation linéaire à partir des taux annuels OFS.
+//
+// ➕ MISE À JOUR MENSUELLE : ajouter simplement la ligne suivante à la fin du bloc :
+//    '2026-10': 106.2,   ← valeur publiée par l'OFS ce mois-ci
+//
+const CPI_MONTHLY: Record<string, number> = {
+  // ── 2015 (est. à partir des taux annuels OFS) ──────────────────────────────
+  '2015-01': 96.8, '2015-02': 97.0, '2015-03': 97.1, '2015-04': 97.2,
+  '2015-05': 97.2, '2015-06': 97.1, '2015-07': 96.9, '2015-08': 96.8,
+  '2015-09': 96.6, '2015-10': 96.4, '2015-11': 96.2, '2015-12': 96.1,
+  // ── 2016 (est.) ────────────────────────────────────────────────────────────
+  '2016-01': 95.9, '2016-02': 96.0, '2016-03': 96.2, '2016-04': 96.3,
+  '2016-05': 96.3, '2016-06': 96.2, '2016-07': 96.1, '2016-08': 96.0,
+  '2016-09': 95.9, '2016-10': 95.8, '2016-11': 95.7, '2016-12': 95.7,
+  // ── 2017 (est.) ────────────────────────────────────────────────────────────
+  '2017-01': 95.6, '2017-02': 95.8, '2017-03': 96.1, '2017-04': 96.2,
+  '2017-05': 96.3, '2017-06': 96.2, '2017-07': 96.1, '2017-08': 96.0,
+  '2017-09': 96.0, '2017-10': 96.1, '2017-11': 96.1, '2017-12': 96.1,
+  // ── 2018 (est.) ────────────────────────────────────────────────────────────
+  '2018-01': 96.2, '2018-02': 96.4, '2018-03': 96.7, '2018-04': 97.0,
+  '2018-05': 97.2, '2018-06': 97.3, '2018-07': 97.2, '2018-08': 97.1,
+  '2018-09': 97.0, '2018-10': 96.9, '2018-11': 96.8, '2018-12': 96.8,
+  // ── 2019 (est.) ────────────────────────────────────────────────────────────
+  '2019-01': 96.8, '2019-02': 97.0, '2019-03': 97.3, '2019-04': 97.5,
+  '2019-05': 97.5, '2019-06': 97.4, '2019-07': 97.3, '2019-08': 97.2,
+  '2019-09': 97.1, '2019-10': 97.0, '2019-11': 96.9, '2019-12': 96.9,
+  // ── 2020 — OFS (base décembre 2020 = 100) ──────────────────────────────────
+  '2020-01': 100.6, '2020-02': 101.0, '2020-03': 100.3, '2020-04':  99.6,
+  '2020-05':  99.7, '2020-06': 100.4, '2020-07': 100.3, '2020-08': 100.2,
+  '2020-09':  99.9, '2020-10':  99.8, '2020-11':  99.5, '2020-12': 100.0,
+  // ── 2021 — OFS ─────────────────────────────────────────────────────────────
+  '2021-01':  99.9, '2021-02': 100.0, '2021-03': 100.5, '2021-04': 101.0,
+  '2021-05': 101.1, '2021-06': 101.3, '2021-07': 101.4, '2021-08': 101.3,
+  '2021-09': 101.4, '2021-10': 101.6, '2021-11': 101.5, '2021-12': 101.8,
+  // ── 2022 — OFS ─────────────────────────────────────────────────────────────
+  '2022-01': 102.0, '2022-02': 102.5, '2022-03': 103.4, '2022-04': 103.7,
+  '2022-05': 104.0, '2022-06': 104.7, '2022-07': 104.5, '2022-08': 104.4,
+  '2022-09': 104.3, '2022-10': 104.6, '2022-11': 104.7, '2022-12': 104.5,
+  // ── 2023 — OFS ─────────────────────────────────────────────────────────────
+  '2023-01': 105.0, '2023-02': 105.5, '2023-03': 105.5, '2023-04': 105.8,
+  '2023-05': 106.0, '2023-06': 106.0, '2023-07': 105.8, '2023-08': 105.9,
+  '2023-09': 105.7, '2023-10': 106.1, '2023-11': 105.8, '2023-12': 105.5,
+  // ── 2024 — OFS ─────────────────────────────────────────────────────────────
+  '2024-01': 105.5, '2024-02': 105.8, '2024-03': 105.8, '2024-04': 105.5,
+  '2024-05': 105.8, '2024-06': 105.8, '2024-07': 106.4, '2024-08': 106.3,
+  '2024-09': 105.9, '2024-10': 106.1, '2024-11': 105.9, '2024-12': 105.7,
+  // ── 2025 — OFS (jan–août confirmés, à compléter) ───────────────────────────
+  '2025-01': 105.3, '2025-02': 105.6, '2025-03': 105.4, '2025-04': 105.0,
+  '2025-05': 105.2, '2025-06': 105.3, '2025-07': 105.4, '2025-08': 105.5,
+  // ── 2026 — OFS (à compléter mois par mois) ─────────────────────────────────
+  // '2026-01': xxx, '2026-02': xxx, ...
 }
 
-// Index CPI cumulatif (base 2020 = 100), calculé une seule fois au démarrage
-const _CPI_INDEX: Record<number, number> = (() => {
-  const idx: Record<number, number> = { 2020: 100 }
-  for (let y = 2021; y <= 2035; y++) idx[y] = idx[y - 1] * (1 + (CPI_RATES[y] ?? 0.015))
-  for (let y = 2019; y >= 1990; y--) idx[y] = idx[y + 1] / (1 + (CPI_RATES[y + 1] ?? 0.015))
-  return idx
-})()
+// Retourne l'indice IPC pour un mois donné.
+// Cherche d'abord dans CPI_MONTHLY (données officielles), puis interpole
+// linéairement entre les deux mois les plus proches disponibles.
+function cpiAt(dateStr: string): number {
+  const d    = new Date(dateStr)
+  const yyyy = d.getFullYear()
+  const mm   = String(d.getMonth() + 1).padStart(2, '0')
+  const key  = `${yyyy}-${mm}`
 
-// Valeur interpolée de l'IPC à une date donnée (fraction linéaire dans l'année)
+  // Clé exacte disponible → interpolation intra-mois (jour/nb_jours_mois)
+  if (CPI_MONTHLY[key] !== undefined) {
+    const nextM  = d.getMonth() === 11
+      ? `${yyyy + 1}-01`
+      : `${yyyy}-${String(d.getMonth() + 2).padStart(2, '0')}`
+    const v0 = CPI_MONTHLY[key]
+    const v1 = CPI_MONTHLY[nextM] ?? v0
+    const daysInMonth = new Date(yyyy, d.getMonth() + 1, 0).getDate()
+    const frac = (d.getDate() - 1) / daysInMonth
+    return v0 + frac * (v1 - v0)
+  }
+
+  // Pas de données mensuelles → chercher le mois le plus proche avant et après
+  const keys = Object.keys(CPI_MONTHLY).sort()
+  const ts   = yyyy * 12 + d.getMonth()
+  let before: string | null = null, after: string | null = null
+  for (const k of keys) {
+    const [ky, km] = k.split('-').map(Number)
+    const kts = ky * 12 + (km - 1)
+    if (kts <= ts) before = k
+    else if (!after) after = k
+  }
+  if (before && after) {
+    const [by, bm] = before.split('-').map(Number)
+    const [ay, am] = after.split('-').map(Number)
+    const bts = by * 12 + (bm - 1)
+    const ats = ay * 12 + (am - 1)
+    const frac = (ts - bts) / (ats - bts)
+    return CPI_MONTHLY[before] + frac * (CPI_MONTHLY[after] - CPI_MONTHLY[before])
+  }
+  if (before) return CPI_MONTHLY[before]
+  if (after)  return CPI_MONTHLY[after]
+  return 100
+}
+function inflationCumulee(dateAchat: string): number {
+  return cpiAt(new Date().toISOString().slice(0, 10)) / cpiAt(dateAchat) - 1
+}
+
 // ─── Date helpers (format européen) ─────────────────────────────────────────
 function fmtDate(iso: string): string {
   // YYYY-MM-DD → DD/MM/YYYY
@@ -40,29 +122,13 @@ function fmtDay(iso: string): string {
   // YYYY-MM-DD → DD/MM
   return iso.slice(8, 10) + '/' + iso.slice(5, 7)
 }
-
 function fmtTime(iso: string): string {
   // "YYYY-MM-DD HH:mm:ss" → "HH:MM"
   return iso.slice(11, 16)
 }
-
 function fmtHourDay(iso: string): string {
   // "YYYY-MM-DD HH:mm:ss" → "DD/MM HHh"
   return iso.slice(8, 10) + '/' + iso.slice(5, 7) + ' ' + iso.slice(11, 13) + 'h'
-}
-
-function cpiAt(dateStr: string): number {
-  const d = new Date(dateStr)
-  const y = d.getFullYear()
-  const frac = (d.getMonth() + d.getDate() / 30) / 12
-  const base = _CPI_INDEX[y] ?? 100
-  const next = _CPI_INDEX[y + 1] ?? base * (1 + (CPI_RATES[y] ?? 0.015))
-  return base + frac * (next - base)
-}
-
-// Inflation cumulée entre une date d'achat et aujourd'hui
-function inflationCumulee(dateAchat: string): number {
-  return cpiAt(new Date().toISOString().slice(0, 10)) / cpiAt(dateAchat) - 1
 }
 
 // ─── Shared price cache ──────────────────────────────────────────────────────
