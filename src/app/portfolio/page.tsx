@@ -1344,7 +1344,7 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState(0)
   const showInvesti = true
-  const [showValeur, setShowValeur] = useState(true)
+  const showValeur = true
   const [showHorsFX, setShowHorsFX] = useState(true)
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
   const [hoverMxEvol, setHoverMxEvol] = useState<number | null>(null)
@@ -1638,11 +1638,6 @@ const EvolChart = React.memo(function EvolChart({ data, showFX, range, interval 
         ) : null}
       </div>
       <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
-        <button type="button" onClick={() => setShowValeur(v => !v)}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-all ${showValeur ? 'border-[#14B8A6] bg-[#F5F3EF] dark:bg-[#1E2530]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-40'}`}>
-          <svg width="20" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="#14B8A6" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#EF4444" strokeWidth="2" /></svg>
-          <span className="text-[#9E9A93]">Valeur actuelle</span>
-        </button>
         <button type="button" onClick={() => setShowHorsFX(v => !v)}
           className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-all ${showHorsFX ? 'border-[#1B5C80] bg-[#F5F3EF] dark:bg-[#1E2530]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-40'}`}>
           <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="6 3" opacity="0.7" /></svg>
