@@ -1759,7 +1759,7 @@ function inflationBetween(dateAchat: string, dateTo: string): number {
 }
 
 const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', dateFrom, dateTo, bustKey = 0, downsampleEvery = 1, timePeriod }: { data: PositionCalc[]; range?: 'all' | '60d' | 'weekly'; interval?: '1day' | '1h' | '4h' | '5min'; dateFrom?: string; dateTo?: string; bustKey?: number; downsampleEvery?: number; timePeriod?: '1D' | '1W' | '1M' | 'YTD' | '1Y' | 'Max' }) {
-  const [showNominal, setShowNominal] = useState(true)
+  const showNominal = true  // toujours actif, pas de toggle
   const [showReel, setShowReel] = useState(false)
   const H = 200, PAD = { t: 10, r: 10, b: 10, l: 10 }
 
@@ -2147,11 +2147,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
         ) : null}
       </div>
       <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
-        <button type="button" onClick={() => setShowNominal(v => !v)}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-all ${showNominal ? 'border-[#14B8A6] bg-[#F5F3EF] dark:bg-[#1E2530]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-40'}`}>
-          <svg width="20" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="#14B8A6" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#EF4444" strokeWidth="2" /></svg>
-          <span className="text-[#9E9A93]">Nominal</span>
-        </button>
+
         {!['1D', '1W', '1M'].includes(timePeriod ?? '') && (
         <button type="button" onClick={() => setShowReel(v => !v)}
           className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs transition-all ${showReel ? 'border-[#1B5C80] bg-[#F5F3EF] dark:bg-[#1E2530]' : 'border-[#DDD9D1] dark:border-[#323B4A] opacity-40'}`}>
