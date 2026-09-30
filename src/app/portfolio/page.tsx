@@ -3252,19 +3252,25 @@ function PnLBarChart({ positions }: { positions: PositionCalc[] }) {
   const [hovered, setHovered]   = React.useState<number | null>(null)
   const [unit, setUnit]       = React.useState<'CHF' | 'PCT'>('CHF')
 
+  // Clé stable : relance l'effet si une position est ajoutée/supprimée
+  // OU si son gain réalisé change (position fermée, prixVente renseigné)
+  const positionsKey = positions
+    .map(p => `${p.id}|${p.quantite}|${p.prixAchat.toFixed(4)}|${(p.prixVente ?? 0).toFixed(4)}`)
+    .sort().join(',')
+
   React.useEffect(() => {
     if (positions.length === 0) { setLoading(false); return }
     setLoading(true)
 
-    const tickers  = [...new Set(positions.map(p => p.ticker))]
-    const fxPairs  = [...new Set(positions.filter(p => p.devise !== 'CHF').map(p => `${p.devise}/CHF`))]
-    const allSyms  = [...tickers, ...fxPairs]
+    // gainCHF intègre déjà le FX → pas besoin de fetcher les paires FX séparément
+    const tickers = [...new Set(positions.map(p => p.ticker.toUpperCase()))]
 
-    fetchHistory(allSyms.join(','), false, '1day').then(hist => {
+    fetchHistory(tickers.join(','), false, '1day').then(hist => {
       const map = new Map<string, number>()
 
       for (const p of positions) {
-        const ph = hist[p.ticker]
+        // Lookup insensible à la casse pour correspondre aux clés uppercase de l'API
+        const ph = hist[p.ticker.toUpperCase()] ?? hist[p.ticker]
         if (!ph || ph.dates.length < 2) continue
 
         const buyDate  = p.dateAchat.slice(0, 10)
@@ -3302,7 +3308,7 @@ function PnLBarChart({ positions }: { positions: PositionCalc[] }) {
       setLoading(false)
     }).catch(() => setLoading(false))
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [positions.length])
+  }, [positionsKey])
 
   // ── Calcul des entrées selon l'onglet ─────────────────────────────────────
   const data = React.useMemo(() => {
@@ -5605,6 +5611,28 @@ export default function PortfolioPage() {
     return { ...p, prixActuel: isSale ? p.prixActuel : prixLive, tauxActuelCHF: isSale ? p.tauxActuelCHF : tauxLive, coutCHF, valeurCHF, gainCHF, gainPctCHF, gainDevise, gainPctDevise, impactFX, gainReel, gainPctReel }
   }), [currentPositions, livePricesMap])
 
+  // Toutes les positions (y compris vendues dans le passé) — pour PnL par période
+  // Les positions fermées ont isSale=true et utilisent prixVente → gainCHF réalisé correct
+  const allPositionsCalc: PositionCalc[] = useMemo(() => positions.map(p => {
+    const absQty = Math.abs(p.quantite)
+    const isSale = p.quantite < 0 && p.prixVente != null
+    const liveKey = `${p.ticker.toUpperCase()}|${p.devise}`
+    const live = livePricesMap.get(liveKey)
+    const prixLive = live?.price ?? p.prixActuel
+    const tauxLive = live?.fxRate ?? p.tauxActuelCHF
+    const coutCHF = isSale ? absQty * p.prixAchat * p.tauxAchatCHF : p.quantite * p.prixAchat * p.tauxAchatCHF
+    const valeurCHF = isSale ? absQty * p.prixVente! * (p.tauxVenteCHF ?? p.tauxAchatCHF) : p.quantite * prixLive * tauxLive
+    const gainCHF = valeurCHF - coutCHF
+    const gainPctCHF = coutCHF > 0 ? (gainCHF / coutCHF) * 100 : 0
+    const gainDevise = isSale ? absQty * (p.prixVente! - p.prixAchat) : p.quantite * (prixLive - p.prixAchat)
+    const gainPctDevise = p.prixAchat > 0 ? ((prixLive - p.prixAchat) / p.prixAchat) * 100 : 0
+    const impactFX = p.devise === 'CHF' ? 0 : isSale ? absQty * p.prixVente! * ((p.tauxVenteCHF ?? p.tauxAchatCHF) - p.tauxAchatCHF) : p.quantite * prixLive * (tauxLive - p.tauxAchatCHF)
+    const inflation = inflationCumulee(p.dateAchat)
+    const gainReel = gainCHF - coutCHF * inflation
+    const gainPctReel = coutCHF > 0 ? (gainReel / coutCHF) * 100 : 0
+    return { ...p, prixActuel: isSale ? p.prixActuel : prixLive, tauxActuelCHF: isSale ? p.tauxActuelCHF : tauxLive, coutCHF, valeurCHF, gainCHF, gainPctCHF, gainDevise, gainPctDevise, impactFX, gainReel, gainPctReel }
+  }), [positions, livePricesMap])
+
   // Fix F5 reload: applyTimePeriod('Max') needs positionsCalc (defined above).
   // Fires when positionsCalc first becomes non-empty (positions loaded from Supabase).
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -6752,7 +6780,7 @@ export default function PortfolioPage() {
                 </div>
 
                 {/* ── PnL par période ── */}
-                <PnLBarChart positions={positionsCalc} />
+                <PnLBarChart positions={allPositionsCalc} />
               </div>
             </div>
           </>
