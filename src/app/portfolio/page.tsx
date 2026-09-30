@@ -2162,10 +2162,12 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
               <svg width="20" height="10" className="flex-shrink-0"><line x1="0" y1="5" x2="10" y2="5" stroke="#14B8A6" strokeWidth="2" /><line x1="10" y1="5" x2="20" y2="5" stroke="#EF4444" strokeWidth="2" /></svg>
               <span><span className="font-semibold text-[#14B8A6]">Nominal</span> — gain/perte brut</span>
             </span>
+            {!['1D', '1W', '1M'].includes(timePeriod ?? '') && (
             <span className="flex items-center gap-2 whitespace-nowrap">
               <svg width="20" height="10" className="flex-shrink-0"><line x1="0" y1="5" x2="20" y2="5" stroke="#1B5C80" strokeWidth="1.5" strokeDasharray="5 3" /></svg>
               <span><span className="font-semibold text-[#1B5C80]">Réel</span> — ajusté de l&apos;inflation</span>
             </span>
+            )}
           </span>
         </span>
       </div>
