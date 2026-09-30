@@ -2105,6 +2105,8 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
   const lastVisP = visPtsP[visPtsP.length - 1] ?? points[points.length - 1]
 
   const _pnlDisp = hoverIdxPnl !== null ? points[hoverIdxPnl] : points[points.length - 1]
+  // Réel visible seulement sur 1Y/YTD/Max ET quand le point survolé a un IPC connu
+  const reelVisible = showReel && !['1D', '1W', '1M'].includes(timePeriod ?? '') && !!_pnlDisp?.reelKnown
 
   return (
     <>
@@ -2119,12 +2121,12 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
                   {(_pnlDisp.nominal - anchorNominal) >= 0 ? '+' : ''}{(_pnlDisp.nominal - anchorNominal).toFixed(2)} CHF
                 </span>
               )}
-              {showReel && !showNominal && (
+              {reelVisible && !showNominal && (
                 <span className={`text-2xl font-bold tabular-nums text-[#1B5C80]`}>
                   {(_pnlDisp.reel - anchorReel) >= 0 ? '+' : ''}{(_pnlDisp.reel - anchorReel).toFixed(2)} CHF
                 </span>
               )}
-              {showReel && !showNominal && _pnlDisp.cost > 0 && (
+              {reelVisible && !showNominal && _pnlDisp.cost > 0 && (
                 <span className={`text-sm font-semibold tabular-nums text-[#1B5C80]`}>
                   ({(_pnlDisp.reel - anchorReel) >= 0 ? '+' : ''}{((_pnlDisp.reel - anchorReel) / _pnlDisp.cost * 100).toFixed(2)}%)
                 </span>
@@ -2134,7 +2136,7 @@ const PnLChart = React.memo(function PnLChart({ data, range, interval = '1day', 
                   ({(_pnlDisp.nominal - anchorNominal) >= 0 ? '+' : ''}{((_pnlDisp.nominal - anchorNominal) / _pnlDisp.cost * 100).toFixed(2)}%)
                 </span>
               )}
-              {showNominal && showReel && (
+              {showNominal && reelVisible && (
                 <span className={`text-sm font-semibold tabular-nums text-[#1B5C80]`}>
                   Réel {(_pnlDisp.reel - anchorReel) >= 0 ? '+' : ''}{(_pnlDisp.reel - anchorReel).toFixed(2)} CHF
                   {_pnlDisp.cost > 0 && <> ({(_pnlDisp.reel - anchorReel) >= 0 ? '+' : ''}{((_pnlDisp.reel - anchorReel) / _pnlDisp.cost * 100).toFixed(2)}%)</>}
